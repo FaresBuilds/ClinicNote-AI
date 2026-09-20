@@ -1,14 +1,5 @@
 # Clinical Conversation Companion
 
-A small Streamlit graduation-project demo that turns a doctor-patient recording into:
-
-- a speaker-separated, timestamped transcript using ElevenLabs Scribe v2 Medical;
-- a clinician-facing consultation report using Gemini through OpenRouter; and
-- a simple-language patient report.
-
-The application does not infer speaker roles. After transcription, you confirm which detected speaker is the Doctor and which is the Patient.
-
-Choose **English** or **العربية** at the top of the app before adding audio. The selection sets the expected transcription language and the language used for both reports.
 
 ## Run locally
 

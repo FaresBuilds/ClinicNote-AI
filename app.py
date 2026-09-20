@@ -58,6 +58,23 @@ PATIENT_SECTIONS = [
     ("follow_up_instructions", "Your follow-up", "↗"),
 ]
 
+ARABIC_SECTION_LABELS = {
+    "patient_complaints": "شكاوى المريض",
+    "symptoms_mentioned": "الأعراض المذكورة",
+    "relevant_history": "التاريخ المرضي ذي الصلة",
+    "clinical_considerations": "الاعتبارات السريرية",
+    "medications_mentioned": "الأدوية المذكورة",
+    "tests_investigations": "الفحوصات والتحاليل",
+    "doctor_recommendations": "توصيات الطبيب",
+    "follow_up_instructions": "تعليمات المتابعة",
+    "consultation_summary": "ملخص الاستشارة",
+    "what_was_discussed": "ما تمت مناقشته",
+    "main_symptoms_complaints": "الأعراض والشكاوى الرئيسية",
+    "medicines_mentioned": "الأدوية المذكورة",
+    "tests_requested": "الفحوصات المطلوبة",
+    "things_to_remember": "أمور يجب تذكرها",
+}
+
 
 def inject_styles() -> None:
     st.markdown(
@@ -215,6 +232,7 @@ def render_transcript(turns: list[dict[str, Any]]) -> None:
     st.markdown('<div class="transcript-wrap">', unsafe_allow_html=True)
     for turn in turns:
         role = str(turn.get("role") or "Speaker")
+        display_role = str(turn.get("display_role") or role)
         css_role = "patient" if role == "Patient" else "doctor"
         timestamp = f"{format_timestamp(turn.get('start'))} – {format_timestamp(turn.get('end'))}"
         st.markdown(
@@ -222,7 +240,7 @@ def render_transcript(turns: list[dict[str, Any]]) -> None:
             <div class="bubble-row {css_role}">
               <div class="bubble">
                 <div class="bubble-head">
-                  <span class="speaker">{html.escape(role)}</span>
+                  <span class="speaker">{html.escape(display_role)}</span>
                   <span class="time">{html.escape(timestamp)}</span>
                 </div>
                 <div class="bubble-text" dir="auto">{html.escape(str(turn.get('text', '')))}</div>
@@ -283,12 +301,42 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+language_choice = st.segmented_control(
+    "Consultation language / لغة الاستشارة",
+    ["English", "Arabic"],
+    default="English",
+    format_func=lambda value: "English" if value == "English" else "العربية",
+    key="consultation_language",
+    on_change=lambda: st.session_state.update(
+        transcription=None,
+        reports=None,
+        report_mapping=None,
+        audio_path=None,
+    ),
+    help="Choose the language spoken in the recording. Reports use the same language.",
+    width="stretch",
+)
+language_choice = language_choice or "English"
+language_code = "ara" if language_choice == "Arabic" else "eng"
+section_labels = ARABIC_SECTION_LABELS if language_choice == "Arabic" else {}
+doctor_sections = [
+    (key, section_labels.get(key, label), icon) for key, label, icon in DOCTOR_SECTIONS
+]
+patient_sections = [
+    (key, section_labels.get(key, label), icon) for key, label, icon in PATIENT_SECTIONS
+]
+doctor_report_title = "تقرير الطبيب" if language_choice == "Arabic" else "Doctor Report"
+patient_report_title = "تقرير المريض" if language_choice == "Arabic" else "Patient Report"
+
 active_step = 3 if st.session_state.reports else (2 if st.session_state.transcription else 1)
 render_steps(active_step)
 
 st.markdown('<div class="section-label">New consultation</div>', unsafe_allow_html=True)
 st.subheader("Add the conversation audio")
-st.caption("Upload an existing recording or capture one from your microphone. Arabic and English are detected automatically.")
+st.caption(
+    "Upload an existing recording or capture one from your microphone. "
+    "The selected language is used for transcription and reports."
+)
 
 with st.container(border=True):
     mode = st.radio("Audio source", ["Upload audio", "Record now"], horizontal=True, label_visibility="collapsed")
@@ -338,7 +386,12 @@ with st.container(border=True):
                 with st.status("Transcribing conversation…", expanded=True) as status:
                     st.write("Uploading the recording securely from this local app…")
                     audio_path = save_bytes(AUDIO_DIR, audio_bytes, filename)
-                    transcription = transcribe_audio(audio_bytes, filename, elevenlabs_key)
+                    transcription = transcribe_audio(
+                        audio_bytes,
+                        filename,
+                        elevenlabs_key,
+                        language_code=language_code,
+                    )
                     neutral_text = neutral_transcript(transcription["turns"], transcription["speaker_ids"])
                     save_text(TRANSCRIPT_DIR, neutral_text, "speaker-transcript")
                     if transcription.get("diarization_fallback_used"):
@@ -372,6 +425,11 @@ if transcription:
                 ["Doctor", "Patient"],
                 index=0 if index == 0 else 1,
                 key=f"role_{speaker_id}",
+                format_func=(
+                    (lambda role: "الطبيب" if role == "Doctor" else "المريض")
+                    if language_choice == "Arabic"
+                    else str
+                ),
                 help="This is a manual label. The application does not infer clinical roles.",
             )
 
@@ -382,6 +440,21 @@ if transcription:
 
     labelled_turns = apply_speaker_roles(transcription["turns"], mapping)
     role_transcript = format_transcript(labelled_turns)
+    if language_choice == "Arabic":
+        role_labels = {"Doctor": "الطبيب", "Patient": "المريض"}
+        display_turns = [
+            {**turn, "display_role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
+            for turn in labelled_turns
+        ]
+        transcript_download = format_transcript(
+            [
+                {**turn, "role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
+                for turn in labelled_turns
+            ]
+        )
+    else:
+        display_turns = labelled_turns
+        transcript_download = role_transcript
 
     if st.session_state.reports and st.session_state.report_mapping != mapping:
         st.info("The speaker labels changed. Generate the reports again so they match the updated roles.")
@@ -393,9 +466,18 @@ if transcription:
             with st.status("Analyzing consultation…", expanded=True) as status:
                 st.write("Reviewing stated symptoms, history, medicines, tests, and recommendations…")
                 status.update(label="Generating reports…", state="running", expanded=True)
-                reports = generate_reports(role_transcript, openrouter_key, model=model)
-                doctor_download = report_text("Doctor Report", reports["doctor_report"], DOCTOR_SECTIONS)
-                patient_download = report_text("Patient Report", reports["patient_report"], PATIENT_SECTIONS)
+                reports = generate_reports(
+                    role_transcript,
+                    openrouter_key,
+                    model=model,
+                    output_language=language_choice,
+                )
+                doctor_download = report_text(
+                    doctor_report_title, reports["doctor_report"], doctor_sections
+                )
+                patient_download = report_text(
+                    patient_report_title, reports["patient_report"], patient_sections
+                )
                 save_text(TRANSCRIPT_DIR, role_transcript, "role-labelled-transcript")
                 save_text(REPORT_DIR, doctor_download, "doctor-report")
                 save_text(REPORT_DIR, patient_download, "patient-report")
@@ -410,31 +492,55 @@ if transcription:
             st.error("Something unexpected interrupted report generation. Please try again.")
 
     st.divider()
-    st.markdown('<div class="section-label">Consultation results</div>', unsafe_allow_html=True)
-    st.subheader("Review and download")
-
-    language = transcription.get("language_code") or "Auto-detected"
-    confidence = transcription.get("language_probability")
-    confidence_text = f"{confidence:.0%}" if isinstance(confidence, (float, int)) else "Not provided"
+    results_label = "نتائج الاستشارة" if language_choice == "Arabic" else "Consultation results"
+    review_title = "المراجعة والتنزيل" if language_choice == "Arabic" else "Review and download"
     st.markdown(
-        f'<div class="meta-row"><span class="meta-pill">Language · {html.escape(str(language).upper())}</span>'
-        f'<span class="meta-pill">Language confidence · {confidence_text}</span>'
-        f'<span class="meta-pill">Turns · {len(labelled_turns)}</span></div>',
+        f'<div class="section-label">{results_label}</div>', unsafe_allow_html=True
+    )
+    st.subheader(review_title)
+
+    language = transcription.get("language_code") or (
+        "غير محددة" if language_choice == "Arabic" else "Not provided"
+    )
+    confidence = transcription.get("language_probability")
+    confidence_text = (
+        f"{confidence:.0%}"
+        if isinstance(confidence, (float, int))
+        else ("غير متاحة" if language_choice == "Arabic" else "Not provided")
+    )
+    language_label = "اللغة" if language_choice == "Arabic" else "Language"
+    confidence_label = (
+        "دقة تحديد اللغة" if language_choice == "Arabic" else "Language confidence"
+    )
+    turns_label = "عدد المقاطع" if language_choice == "Arabic" else "Turns"
+    st.markdown(
+        f'<div class="meta-row"><span class="meta-pill">{language_label} · {html.escape(str(language).upper())}</span>'
+        f'<span class="meta-pill">{confidence_label} · {confidence_text}</span>'
+        f'<span class="meta-pill">{turns_label} · {len(labelled_turns)}</span></div>',
         unsafe_allow_html=True,
     )
 
     reports_current = st.session_state.reports and st.session_state.report_mapping == mapping
     if reports_current:
-        transcript_tab, doctor_tab, patient_tab = st.tabs(["Transcript", "Doctor Report", "Patient Report"])
+        tab_labels = (
+            ["النص", "تقرير الطبيب", "تقرير المريض"]
+            if language_choice == "Arabic"
+            else ["Transcript", "Doctor Report", "Patient Report"]
+        )
+        transcript_tab, doctor_tab, patient_tab = st.tabs(tab_labels)
     else:
-        (transcript_tab,) = st.tabs(["Transcript"])
+        (transcript_tab,) = st.tabs([
+            "النص" if language_choice == "Arabic" else "Transcript"
+        ])
         doctor_tab = patient_tab = None
 
     with transcript_tab:
-        render_transcript(labelled_turns)
+        render_transcript(display_turns)
         st.download_button(
-            "Download transcript as TXT",
-            data=role_transcript.encode("utf-8"),
+            "تنزيل النص بصيغة TXT"
+            if language_choice == "Arabic"
+            else "Download transcript as TXT",
+            data=transcript_download.encode("utf-8"),
             file_name="consultation-transcript.txt",
             mime="text/plain",
             use_container_width=True,
@@ -443,22 +549,34 @@ if transcription:
     if reports_current and doctor_tab and patient_tab:
         reports = st.session_state.reports
         with doctor_tab:
-            st.caption("Clinician-facing documentation generated only from the recorded conversation.")
-            render_report(reports["doctor_report"], DOCTOR_SECTIONS, "doctor")
-            doctor_download = report_text("Doctor Report", reports["doctor_report"], DOCTOR_SECTIONS)
+            st.caption(
+                "توثيق موجّه للطبيب ومُنشأ فقط من المحادثة المسجلة."
+                if language_choice == "Arabic"
+                else "Clinician-facing documentation generated only from the recorded conversation."
+            )
+            render_report(reports["doctor_report"], doctor_sections, "doctor")
+            doctor_download = report_text(
+                doctor_report_title, reports["doctor_report"], doctor_sections
+            )
             st.download_button(
-                "Download doctor report",
+                "تنزيل تقرير الطبيب" if language_choice == "Arabic" else "Download doctor report",
                 data=doctor_download.encode("utf-8"),
                 file_name="doctor-report.txt",
                 mime="text/plain",
                 use_container_width=True,
             )
         with patient_tab:
-            st.caption("A plain-language recap. Follow the clinician's direct advice if it differs from this summary.")
-            render_report(reports["patient_report"], PATIENT_SECTIONS, "patient")
-            patient_download = report_text("Patient Report", reports["patient_report"], PATIENT_SECTIONS)
+            st.caption(
+                "ملخص بلغة بسيطة. اتبع تعليمات الطبيب المباشرة إذا اختلفت عن هذا الملخص."
+                if language_choice == "Arabic"
+                else "A plain-language recap. Follow the clinician's direct advice if it differs from this summary."
+            )
+            render_report(reports["patient_report"], patient_sections, "patient")
+            patient_download = report_text(
+                patient_report_title, reports["patient_report"], patient_sections
+            )
             st.download_button(
-                "Download patient report",
+                "تنزيل تقرير المريض" if language_choice == "Arabic" else "Download patient report",
                 data=patient_download.encode("utf-8"),
                 file_name="patient-report.txt",
                 mime="text/plain",

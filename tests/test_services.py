@@ -176,7 +176,9 @@ def test_transcribe_audio_uses_medical_scribe_diarization_and_returns_turns():
         )
     )
 
-    result = transcribe_audio(b"wav-data", "visit.wav", "eleven-key", session=session)
+    result = transcribe_audio(
+        b"wav-data", "visit.wav", "eleven-key", language_code="ara", session=session
+    )
 
     url, request = session.calls[0]
     assert url == "https://api.elevenlabs.io/v1/speech-to-text"
@@ -185,6 +187,7 @@ def test_transcribe_audio_uses_medical_scribe_diarization_and_returns_turns():
     assert request["data"]["diarize"] == "true"
     assert request["data"]["num_speakers"] == "2"
     assert request["data"]["timestamps_granularity"] == "word"
+    assert request["data"]["language_code"] == "ara"
     assert result["language_code"] == "ar"
     assert result["speaker_ids"] == ["speaker_0", "speaker_1"]
     assert result["turns"][1]["text"] == "كيف حالك"
@@ -245,12 +248,15 @@ def test_transcribe_audio_repairs_collapsed_medical_diarization_with_standard_sc
         ]
     )
 
-    result = transcribe_audio(b"mp3-data", "visit.mp3", "eleven-key", session=session)
+    result = transcribe_audio(
+        b"mp3-data", "visit.mp3", "eleven-key", language_code="ara", session=session
+    )
 
     assert [call[1]["data"]["model_id"] for call in session.calls] == [
         "scribe_v2_medical",
         "scribe_v2",
     ]
+    assert [call[1]["data"]["language_code"] for call in session.calls] == ["ara", "ara"]
     assert result["text"] == "medical transcript"
     assert result["diarization_fallback_used"] is True
     assert [turn["speaker_id"] for turn in result["turns"]] == [
@@ -322,6 +328,7 @@ def test_generate_reports_sends_structured_gemini_request_and_parses_result():
         "[00:00 - 00:01] Doctor: Hello",
         "openrouter-key",
         model="google/gemini-test",
+        output_language="Arabic",
         session=session,
     )
 
@@ -331,6 +338,8 @@ def test_generate_reports_sends_structured_gemini_request_and_parses_result():
     assert request["json"]["model"] == "google/gemini-test"
     assert request["json"]["response_format"]["type"] == "json_schema"
     assert request["json"]["provider"] == {"require_parameters": True}
+    assert "Write every report value in Arabic" in request["json"]["messages"][0]["content"]
+    assert "transcript's main language" not in request["json"]["messages"][0]["content"]
     assert result == report
 
 

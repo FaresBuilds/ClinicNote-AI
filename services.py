@@ -149,21 +149,25 @@ def _request_elevenlabs_transcription(
     mime_type: str,
     api_key: str,
     model_id: str,
+    language_code: str | None,
     session: Any,
     timeout: int,
 ) -> dict[str, Any]:
+    request_data = {
+        "model_id": model_id,
+        "diarize": "true",
+        "num_speakers": "2",
+        "timestamps_granularity": "word",
+        "tag_audio_events": "true",
+    }
+    if language_code:
+        request_data["language_code"] = language_code
     try:
         response = session.post(
             ELEVENLABS_STT_URL,
             headers={"xi-api-key": api_key},
             files={"file": (filename, audio_bytes, mime_type)},
-            data={
-                "model_id": model_id,
-                "diarize": "true",
-                "num_speakers": "2",
-                "timestamps_granularity": "word",
-                "tag_audio_events": "true",
-            },
+            data=request_data,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -238,13 +242,21 @@ def transcribe_audio(
     filename: str,
     api_key: str,
     *,
+    language_code: str | None = None,
     session: Any = requests,
     timeout: int = 300,
 ) -> dict[str, Any]:
     """Transcribe clinical audio with ElevenLabs Scribe v2 Medical."""
     mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     payload = _request_elevenlabs_transcription(
-        audio_bytes, filename, mime_type, api_key, "scribe_v2_medical", session, timeout
+        audio_bytes,
+        filename,
+        mime_type,
+        api_key,
+        "scribe_v2_medical",
+        language_code,
+        session,
+        timeout,
     )
 
     words = payload.get("words") or []
@@ -252,7 +264,14 @@ def transcribe_audio(
     diarization_fallback_used = False
     if _diarization_is_suspicious(words, turns):
         diarization_payload = _request_elevenlabs_transcription(
-            audio_bytes, filename, mime_type, api_key, "scribe_v2", session, timeout
+            audio_bytes,
+            filename,
+            mime_type,
+            api_key,
+            "scribe_v2",
+            language_code,
+            session,
+            timeout,
         )
         diarization_words = diarization_payload.get("words") or []
         diarization_turns = group_words_into_turns(diarization_words)
@@ -368,8 +387,9 @@ applies only to the exact symptom or fact the patient explicitly denied. Preserv
 as 'I think', 'maybe', 'possible', and 'mild' instead of turning uncertainty into fact. When a
 section has no supporting information, write 'Not mentioned in the conversation' rather than
 filling the gap. Before returning JSON, check that every claim is supported by the transcript.
-Use the transcript's main language. Keep the doctor report clinical and concise. Keep the patient
-report simple, calm, and easy to understand. This is a documentation summary, not new medical advice."""
+Follow the explicit output-language instruction supplied with each request. Keep the doctor report
+clinical and concise. Keep the patient report simple, calm, and easy to understand. This is a
+documentation summary, not new medical advice."""
 
 
 def generate_reports(
@@ -377,6 +397,7 @@ def generate_reports(
     api_key: str,
     *,
     model: str = DEFAULT_OPENROUTER_MODEL,
+    output_language: str = "English",
     session: Any = requests,
     timeout: int = 180,
 ) -> dict[str, Any]:
@@ -384,10 +405,16 @@ def generate_reports(
     if not transcript or not transcript.strip():
         raise ServiceError("Transcript is empty, so reports cannot be generated.")
 
+    report_prompt = (
+        f"{REPORT_SYSTEM_PROMPT}\n\n"
+        f"Write every report value in {output_language}. Keep the JSON property names exactly "
+        "as defined by the schema. Translate the 'not mentioned' fallback into the selected "
+        "language as well."
+    )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+            {"role": "system", "content": report_prompt},
             {
                 "role": "user",
                 "content": f"Create both reports from this role-labelled transcript:\n\n{transcript}",

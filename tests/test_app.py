@@ -229,6 +229,55 @@ def test_doctor_cannot_send_when_generated_pdf_files_are_missing(
     assert accounts.list_doctor_consultations(doctor.id, db) == []
 
 
+def test_ready_reports_recover_missing_delivery_token_and_can_be_sent(
+    monkeypatch, tmp_path
+):
+    app, doctor, db = _authenticated_app(monkeypatch, tmp_path, "doctor")
+    patient = accounts.register_user(
+        "Mona Patient", "mona@example.com", "password-2", "patient", db
+    )
+    doctor_pdf = tmp_path / "doctor.pdf"
+    patient_pdf = tmp_path / "patient.pdf"
+    doctor_pdf.write_bytes(b"%PDF-doctor")
+    patient_pdf.write_bytes(b"%PDF-patient")
+    app.session_state["transcription"] = {
+        "speaker_ids": ["speaker_0", "speaker_1"],
+        "turns": [
+            {"speaker_id": "speaker_0", "text": "Hello", "start": 0.0, "end": 1.0},
+            {"speaker_id": "speaker_1", "text": "Headache", "start": 1.1, "end": 2.0},
+        ],
+        "language_code": "eng",
+        "language_probability": 0.99,
+    }
+    app.session_state["reports"] = {
+        "doctor_report": {"consultation_summary": "Headache discussed."},
+        "patient_report": {"what_was_discussed": "Your headache."},
+    }
+    app.session_state["report_mapping"] = {
+        "speaker_0": "Doctor",
+        "speaker_1": "Patient",
+    }
+    app.session_state["doctor_pdf_report"] = doctor_pdf.read_bytes()
+    app.session_state["doctor_pdf_path"] = str(doctor_pdf)
+    app.session_state["patient_pdf_report"] = patient_pdf.read_bytes()
+    app.session_state["patient_pdf_path"] = str(patient_pdf)
+    app.session_state["delivery_token"] = None
+    app.run(timeout=20)
+
+    next(
+        box for box in app.selectbox if box.label == "Send report to patient"
+    ).set_value(patient.id).run(timeout=20)
+    send_button = next(
+        button for button in app.button if button.label == "Send to patient"
+    )
+
+    assert not send_button.disabled
+    send_button.click().run(timeout=20)
+    history = accounts.list_doctor_consultations(doctor.id, db)
+    assert len(history) == 1
+    assert history[0]["patient_email"] == "mona@example.com"
+
+
 def test_doctor_history_survives_missing_pdf_files(monkeypatch, tmp_path):
     app, doctor, db = _authenticated_app(monkeypatch, tmp_path, "doctor")
     patient = accounts.register_user(

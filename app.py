@@ -1,4 +1,4 @@
-"""Clinical Conversation Companion — a small Streamlit graduation demo."""
+"""Clinical Conversation Companion."""
 
 from __future__ import annotations
 
@@ -372,7 +372,7 @@ def render_auth_screen() -> None:
 
     with register_tab:
         with st.form("registration-form", border=True):
-            st.subheader("Create your demo account")
+            st.subheader("Create your account")
             full_name = st.text_input("Full name")
             email = st.text_input("Email", key="registration-email", autocomplete="email")
             password = st.text_input(
@@ -878,6 +878,8 @@ with doctor_new_tab:
                     st.session_state.patient_pdf_path,
                 )
             )
+            if pdf_paths_available and not st.session_state.delivery_token:
+                st.session_state.delivery_token = uuid4().hex
             send_ready = bool(
                 selected_patient_id
                 and st.session_state.delivery_token

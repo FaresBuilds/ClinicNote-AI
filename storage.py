@@ -260,11 +260,6 @@ def build_role_report_pdf(
         "doctor_role": "الطبيب" if is_arabic else "Doctor",
         "patient_role": "المريض" if is_arabic else "Patient",
         "fallback": "غير مذكور في المحادثة" if is_arabic else "Not mentioned in the conversation",
-        "notice": (
-            "ملخص تعليمي تم إنشاؤه من المحادثة المسجلة، وليس تشخيصاً طبياً أو بديلاً عن الحكم السريري."
-            if is_arabic
-            else "Educational summary generated from the recorded conversation. It is not a diagnosis or a substitute for clinical judgment."
-        ),
         "footer": "Clinical Conversation Companion",
         "page": "صفحة" if is_arabic else "Page",
     }
@@ -328,20 +323,7 @@ def build_role_report_pdf(
         )
     )
     story.extend([metadata, Spacer(1, 4 * mm)])
-    notice = Table([[p(copy["notice"], small)]], colWidths=[content_width])
-    notice.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF8E8")),
-                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#E9C46A")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ]
-        )
-    )
-    story.extend([notice, Spacer(1, 8 * mm), p(copy["transcript"], section_title)])
+    story.append(p(copy["transcript"], section_title))
 
     for turn in turns:
         role = str(turn.get("role") or "Speaker")

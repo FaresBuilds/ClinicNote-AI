@@ -871,14 +871,24 @@ with doctor_new_tab:
                         use_container_width=True,
                     )
 
-            send_ready = all(
-                (
-                    selected_patient_id,
-                    st.session_state.delivery_token,
+            pdf_paths_available = all(
+                path_value and Path(path_value).is_file()
+                for path_value in (
                     st.session_state.doctor_pdf_path,
                     st.session_state.patient_pdf_path,
                 )
             )
+            send_ready = bool(
+                selected_patient_id
+                and st.session_state.delivery_token
+                and pdf_paths_available
+            )
+            if not pdf_paths_available:
+                st.warning(
+                    "ملفا PDF ليسا متاحين. قم بإنشاء التقارير مرة أخرى قبل الإرسال."
+                    if language_choice == "Arabic"
+                    else "Saved PDF files are missing. Generate the reports again before sending."
+                )
             already_sent = st.session_state.sent_consultation_id is not None
             if st.button(
                 "إرسال إلى المريض"

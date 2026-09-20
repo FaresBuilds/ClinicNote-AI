@@ -21,7 +21,7 @@ from services import (
 )
 from storage import (
     StorageError,
-    build_consultation_pdf,
+    build_role_report_pdf,
     microphone_access_message,
     save_bytes,
     save_pdf,
@@ -178,8 +178,10 @@ def initialize_state() -> None:
         "reports": None,
         "report_mapping": None,
         "audio_path": None,
-        "pdf_report": None,
-        "pdf_path": None,
+        "doctor_pdf_report": None,
+        "doctor_pdf_path": None,
+        "patient_pdf_report": None,
+        "patient_pdf_path": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -316,8 +318,10 @@ language_choice = st.segmented_control(
         reports=None,
         report_mapping=None,
         audio_path=None,
-        pdf_report=None,
-        pdf_path=None,
+        doctor_pdf_report=None,
+        doctor_pdf_path=None,
+        patient_pdf_report=None,
+        patient_pdf_path=None,
     ),
     help="Choose the language spoken in the recording. Reports use the same language.",
     width="stretch",
@@ -407,8 +411,10 @@ with st.container(border=True):
                 st.session_state.transcription = transcription
                 st.session_state.reports = None
                 st.session_state.report_mapping = None
-                st.session_state.pdf_report = None
-                st.session_state.pdf_path = None
+                st.session_state.doctor_pdf_report = None
+                st.session_state.doctor_pdf_path = None
+                st.session_state.patient_pdf_report = None
+                st.session_state.patient_pdf_path = None
                 st.session_state.audio_path = str(audio_path)
                 st.rerun()
             except (StorageError, ServiceError) as exc:
@@ -489,23 +495,34 @@ if transcription:
                 save_text(TRANSCRIPT_DIR, role_transcript, "role-labelled-transcript")
                 save_text(REPORT_DIR, doctor_download, "doctor-report")
                 save_text(REPORT_DIR, patient_download, "patient-report")
-                pdf_report = build_consultation_pdf(
+                doctor_pdf_report = build_role_report_pdf(
                     turns=labelled_turns,
-                    doctor_report=reports["doctor_report"],
-                    patient_report=reports["patient_report"],
-                    doctor_sections=doctor_sections,
-                    patient_sections=patient_sections,
+                    report=reports["doctor_report"],
+                    sections=doctor_sections,
+                    audience="doctor",
                     language=language_choice,
                 )
-                pdf_path = save_pdf(
-                    REPORT_DIR, pdf_report, "complete-consultation-report"
+                patient_pdf_report = build_role_report_pdf(
+                    turns=labelled_turns,
+                    report=reports["patient_report"],
+                    sections=patient_sections,
+                    audience="patient",
+                    language=language_choice,
+                )
+                doctor_pdf_path = save_pdf(
+                    REPORT_DIR, doctor_pdf_report, "doctor-consultation-report"
+                )
+                patient_pdf_path = save_pdf(
+                    REPORT_DIR, patient_pdf_report, "patient-consultation-report"
                 )
                 status.write("Both consultation reports are ready.")
                 status.update(label="Reports complete", state="complete", expanded=False)
             st.session_state.reports = reports
             st.session_state.report_mapping = mapping.copy()
-            st.session_state.pdf_report = pdf_report
-            st.session_state.pdf_path = str(pdf_path)
+            st.session_state.doctor_pdf_report = doctor_pdf_report
+            st.session_state.doctor_pdf_path = str(doctor_pdf_path)
+            st.session_state.patient_pdf_report = patient_pdf_report
+            st.session_state.patient_pdf_path = str(patient_pdf_path)
             st.rerun()
         except (StorageError, ServiceError) as exc:
             st.error(str(exc))
@@ -586,6 +603,17 @@ if transcription:
                 mime="text/plain",
                 use_container_width=True,
             )
+            if st.session_state.doctor_pdf_report:
+                st.download_button(
+                    "تنزيل تقرير الطبيب بصيغة PDF"
+                    if language_choice == "Arabic"
+                    else "Download doctor PDF report",
+                    data=st.session_state.doctor_pdf_report,
+                    file_name="doctor-consultation-report.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
         with patient_tab:
             st.caption(
                 "ملخص بلغة بسيطة. اتبع تعليمات الطبيب المباشرة إذا اختلفت عن هذا الملخص."
@@ -603,25 +631,13 @@ if transcription:
                 mime="text/plain",
                 use_container_width=True,
             )
-
-        if st.session_state.pdf_report:
-            with st.container(border=True):
-                st.markdown(
-                    "### التقرير الكامل للاستشارة"
-                    if language_choice == "Arabic"
-                    else "### Complete consultation report"
-                )
-                st.caption(
-                    "ملف PDF منسق يجمع نص المحادثة وتقرير الطبيب وتقرير المريض."
-                    if language_choice == "Arabic"
-                    else "A polished PDF containing the transcript, doctor report, and patient report."
-                )
+            if st.session_state.patient_pdf_report:
                 st.download_button(
-                    "تنزيل التقرير الكامل بصيغة PDF"
+                    "تنزيل تقرير المريض بصيغة PDF"
                     if language_choice == "Arabic"
-                    else "Download complete PDF report",
-                    data=st.session_state.pdf_report,
-                    file_name="complete-consultation-report.pdf",
+                    else "Download patient PDF report",
+                    data=st.session_state.patient_pdf_report,
+                    file_name="patient-consultation-report.pdf",
                     mime="application/pdf",
                     type="primary",
                     use_container_width=True,

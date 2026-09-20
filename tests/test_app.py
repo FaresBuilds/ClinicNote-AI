@@ -50,7 +50,7 @@ def test_arabic_mode_localizes_transcript_roles_and_result_metadata():
     assert len(app.exception) == 0
 
 
-def test_complete_pdf_download_appears_when_reports_are_ready():
+def test_separate_doctor_and_patient_pdf_downloads_appear_when_reports_are_ready():
     app_path = Path(__file__).resolve().parents[1] / "app.py"
     app = AppTest.from_file(app_path).run(timeout=20)
     app.session_state["transcription"] = {
@@ -67,11 +67,15 @@ def test_complete_pdf_download_appears_when_reports_are_ready():
         "speaker_0": "Doctor",
         "speaker_1": "Patient",
     }
-    app.session_state["pdf_report"] = b"%PDF-test"
-    app.session_state["pdf_path"] = "data/reports/complete-consultation-report.pdf"
+    app.session_state["doctor_pdf_report"] = b"%PDF-doctor"
+    app.session_state["doctor_pdf_path"] = "data/reports/doctor-consultation-report.pdf"
+    app.session_state["patient_pdf_report"] = b"%PDF-patient"
+    app.session_state["patient_pdf_path"] = "data/reports/patient-consultation-report.pdf"
 
     app.run(timeout=20)
 
     labels = [button.label for button in app.get("download_button")]
-    assert "Download complete PDF report" in labels
+    assert "Download doctor PDF report" in labels
+    assert "Download patient PDF report" in labels
+    assert "Download complete PDF report" not in labels
     assert len(app.exception) == 0

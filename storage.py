@@ -142,18 +142,20 @@ def _pdf_timestamp(seconds: Any) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
-def build_consultation_pdf(
+def build_role_report_pdf(
     *,
     turns: list[dict[str, Any]],
-    doctor_report: dict[str, Any],
-    patient_report: dict[str, Any],
-    doctor_sections: list[tuple[str, str, str]],
-    patient_sections: list[tuple[str, str, str]],
+    report: dict[str, Any],
+    sections: list[tuple[str, str, str]],
+    audience: str,
     language: str,
 ) -> bytes:
-    """Create a polished combined transcript and report PDF."""
+    """Create one polished transcript-and-report PDF for a doctor or patient."""
+    if audience not in {"doctor", "patient"}:
+        raise StorageError("PDF audience must be either doctor or patient.")
     font, bold_font = _register_pdf_fonts()
     is_arabic = language == "Arabic"
+    is_doctor = audience == "doctor"
     alignment = TA_RIGHT if is_arabic else TA_LEFT
     navy = colors.HexColor("#102A43")
     blue = colors.HexColor("#2563EB")
@@ -171,7 +173,7 @@ def build_consultation_pdf(
         leftMargin=17 * mm,
         topMargin=20 * mm,
         bottomMargin=18 * mm,
-        title="Complete Medical Consultation Report",
+        title="Doctor Consultation Report" if is_doctor else "Patient Consultation Report",
         author="Clinical Conversation Companion",
     )
     base = getSampleStyleSheet()
@@ -232,11 +234,26 @@ def build_consultation_pdf(
     )
 
     copy = {
-        "title": "التقرير الكامل للاستشارة الطبية" if is_arabic else "Complete Medical Consultation Report",
-        "subtitle": "نص المحادثة وتقرير الطبيب وتقرير المريض" if is_arabic else "Transcript, clinician documentation, and patient-friendly summary",
+        "title": (
+            ("تقرير الطبيب للاستشارة" if is_doctor else "تقرير المريض للاستشارة")
+            if is_arabic
+            else ("Doctor Consultation Report" if is_doctor else "Patient Consultation Report")
+        ),
+        "subtitle": (
+            ("نص المحادثة والتوثيق السريري" if is_doctor else "نص المحادثة وملخص مبسط للمريض")
+            if is_arabic
+            else (
+                "Consultation transcript and clinician documentation"
+                if is_doctor
+                else "Consultation transcript and patient-friendly summary"
+            )
+        ),
         "transcript": "نص الاستشارة" if is_arabic else "CONSULTATION TRANSCRIPT",
-        "doctor": "تقرير الطبيب" if is_arabic else "DOCTOR REPORT",
-        "patient": "تقرير المريض" if is_arabic else "PATIENT REPORT",
+        "report": (
+            ("تقرير الطبيب" if is_doctor else "تقرير المريض")
+            if is_arabic
+            else ("DOCTOR REPORT" if is_doctor else "PATIENT REPORT")
+        ),
         "language": "اللغة: العربية" if is_arabic else "Language: English",
         "generated": "تاريخ الإنشاء" if is_arabic else "Generated",
         "turns": "عدد المقاطع" if is_arabic else "Conversation turns",
@@ -248,7 +265,7 @@ def build_consultation_pdf(
             if is_arabic
             else "Educational summary generated from the recorded conversation. It is not a diagnosis or a substitute for clinical judgment."
         ),
-        "footer": "Clinical Conversation Companion - Graduation Project",
+        "footer": "Clinical Conversation Companion",
         "page": "صفحة" if is_arabic else "Page",
     }
 
@@ -385,7 +402,6 @@ def build_consultation_pdf(
             )
             story.extend([KeepTogether(card), Spacer(1, 3 * mm)])
 
-    add_report(copy["doctor"], doctor_report, doctor_sections, blue)
-    add_report(copy["patient"], patient_report, patient_sections, teal)
+    add_report(copy["report"], report, sections, blue if is_doctor else teal)
     document.build(story, onFirstPage=page_decor, onLaterPages=page_decor)
     return buffer.getvalue()

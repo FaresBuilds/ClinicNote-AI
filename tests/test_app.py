@@ -206,3 +206,59 @@ def test_doctor_history_survives_missing_pdf_files(monkeypatch, tmp_path):
     assert "Patient summary" in rendered
     assert "PDF file is no longer available" in rendered
     assert len(app.exception) == 0
+
+
+def test_patient_sees_only_own_patient_report(monkeypatch, tmp_path):
+    app, patient, db = _authenticated_app(monkeypatch, tmp_path, "patient")
+    doctor = accounts.register_user(
+        "Dr. Sara", "doctor2@example.com", "password-2", "doctor", db
+    )
+    accounts.send_consultation(
+        doctor_id=doctor.id,
+        patient_id=patient.id,
+        delivery_token="delivery-1",
+        language="English",
+        transcript="Doctor: Hello",
+        doctor_report={"consultation_summary": "Doctor-only wording"},
+        patient_report={"what_was_discussed": "Patient-friendly wording"},
+        doctor_pdf_path="data/reports/doctor.pdf",
+        patient_pdf_path="missing-patient.pdf",
+        audio_path=None,
+        db_path=db,
+    )
+
+    app.run(timeout=20)
+    rendered = "\n".join(item.value for item in app.markdown)
+    assert "Patient-friendly wording" in rendered
+    assert "Doctor-only wording" not in rendered
+    assert "PDF file is no longer available" in rendered
+    assert len(app.exception) == 0
+
+
+def test_patient_empty_state_does_not_show_other_patients_reports(
+    monkeypatch, tmp_path
+):
+    app, patient, db = _authenticated_app(monkeypatch, tmp_path, "patient")
+    doctor = accounts.register_user(
+        "Dr. Sara", "doctor2@example.com", "password-2", "doctor", db
+    )
+    other_patient = accounts.register_user(
+        "Other", "other@example.com", "password-3", "patient", db
+    )
+    accounts.send_consultation(
+        doctor_id=doctor.id,
+        patient_id=other_patient.id,
+        delivery_token="delivery-2",
+        language="English",
+        transcript="Doctor: Private",
+        doctor_report={"consultation_summary": "Private doctor report"},
+        patient_report={"what_was_discussed": "Other patient's report"},
+        doctor_pdf_path="doctor.pdf",
+        patient_pdf_path="patient.pdf",
+        audio_path=None,
+        db_path=db,
+    )
+    app.run(timeout=20)
+    assert any("No reports have been sent" in item.value for item in app.info)
+    rendered = "\n".join(item.value for item in app.markdown)
+    assert "Other patient's report" not in rendered

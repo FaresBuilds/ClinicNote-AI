@@ -17,6 +17,7 @@ from accounts import (
     authenticate_user,
     initialize_database,
     list_doctor_consultations,
+    list_patient_consultations,
     list_patients,
     register_user,
     send_consultation,
@@ -404,13 +405,13 @@ def render_auth_screen() -> None:
                     st.error("Local account storage is unavailable. Please try again.")
 
 
-def render_patient_dashboard(user: dict[str, Any]) -> None:
-    st.markdown('<div class="section-label">Patient dashboard</div>', unsafe_allow_html=True)
-    st.subheader("Reports sent to you")
-    st.info("No reports have been sent to your account yet.")
-
-
-def render_saved_pdf(path_value: str, label: str, key: str, file_name: str) -> None:
+def render_saved_pdf(
+    path_value: str,
+    label: str,
+    key: str,
+    file_name: str,
+    unavailable_message: str = "PDF file is no longer available.",
+) -> None:
     pdf_path = Path(path_value)
     if pdf_path.is_file():
         st.download_button(
@@ -422,7 +423,44 @@ def render_saved_pdf(path_value: str, label: str, key: str, file_name: str) -> N
             use_container_width=True,
         )
     else:
-        st.markdown("PDF file is no longer available.")
+        st.markdown(unavailable_message)
+
+
+def render_patient_dashboard(user: dict[str, Any]) -> None:
+    st.markdown('<div class="section-label">Patient dashboard</div>', unsafe_allow_html=True)
+    st.subheader("Reports sent to you")
+    try:
+        history = list_patient_consultations(user["id"])
+    except (AccountError, sqlite3.Error):
+        st.error("Your report history is unavailable. Please try again.")
+        return
+    if not history:
+        st.info("No reports have been sent to your account yet.")
+        return
+
+    for item in history:
+        is_arabic = item["language"] == "Arabic"
+        sent_at = str(item["sent_at"])[:16].replace("T", " ")
+        with st.expander(
+            f"{item['doctor_name']} · {sent_at} · {item['language']}",
+            expanded=True,
+        ):
+            render_report(
+                item["patient_report"],
+                localized_sections(PATIENT_SECTIONS, item["language"]),
+                "patient",
+            )
+            render_saved_pdf(
+                item["patient_pdf_path"],
+                "تنزيل تقرير المريض بصيغة PDF"
+                if is_arabic
+                else "Download patient PDF report",
+                f"patient-history-pdf-{item['id']}",
+                f"patient-report-{item['id']}.pdf",
+                "لم يعد ملف PDF متاحًا."
+                if is_arabic
+                else "PDF file is no longer available.",
+            )
 
 
 def render_doctor_history(user: dict[str, Any]) -> None:
@@ -551,17 +589,17 @@ with doctor_new_tab:
     ]
     doctor_report_title = "تقرير الطبيب" if language_choice == "Arabic" else "Doctor Report"
     patient_report_title = "تقرير المريض" if language_choice == "Arabic" else "Patient Report"
-    
+
     active_step = 3 if st.session_state.reports else (2 if st.session_state.transcription else 1)
     render_steps(active_step)
-    
+
     st.markdown('<div class="section-label">New consultation</div>', unsafe_allow_html=True)
     st.subheader("Add the conversation audio")
     st.caption(
         "Upload an existing recording or capture one from your microphone. "
         "The selected language is used for transcription and reports."
     )
-    
+
     with st.container(border=True):
         mode = st.radio("Audio source", ["Upload audio", "Record now"], horizontal=True, label_visibility="collapsed")
         if mode == "Upload audio":
@@ -588,18 +626,18 @@ with doctor_new_tab:
                 key="consultation_recording",
                 help="Your browser will ask for microphone permission the first time.",
             )
-    
+
         audio_selection = None
         try:
             audio_selection = selected_audio(mode, uploaded_file, recorded_file)
         except StorageError as exc:
             st.error(str(exc))
-    
+
         if audio_selection:
             preview_name, preview_bytes = audio_selection
             st.audio(preview_bytes)
             st.caption(f"Ready: {preview_name} · {len(preview_bytes) / (1024 * 1024):.1f} MB")
-    
+
         if st.button("Transcribe conversation", type="primary", use_container_width=True):
             if not audio_selection:
                 st.warning("Choose or record an audio conversation first.")
@@ -637,14 +675,14 @@ with doctor_new_tab:
                     st.error(str(exc))
                 except Exception:
                     st.error("Something unexpected interrupted transcription. Please retry with a valid recording.")
-    
-    
+
+
     transcription = st.session_state.transcription
     if transcription:
         st.markdown('<div class="section-label">Speaker review</div>', unsafe_allow_html=True)
         st.subheader("Confirm who is speaking")
         st.caption("Diarization separates voices but does not identify roles. Confirm each label before generating reports.")
-    
+
         speaker_ids = transcription["speaker_ids"]
         role_columns = st.columns(max(1, len(speaker_ids)))
         mapping: dict[str, str] = {}
@@ -662,12 +700,12 @@ with doctor_new_tab:
                     ),
                     help="This is a manual label. The application does not infer clinical roles.",
                 )
-    
+
         if len(speaker_ids) < 2:
             st.info("Only one distinct voice was detected. You can still label it, but two-sided reporting may be limited.")
         elif len(set(mapping.values())) != len(mapping.values()):
             st.warning("Assign one speaker as Doctor and the other as Patient before generating reports.")
-    
+
         labelled_turns = apply_speaker_roles(transcription["turns"], mapping)
         role_transcript = format_transcript(labelled_turns)
         if language_choice == "Arabic":
@@ -685,10 +723,10 @@ with doctor_new_tab:
         else:
             display_turns = labelled_turns
             transcript_download = role_transcript
-    
+
         if st.session_state.reports and st.session_state.report_mapping != mapping:
             st.info("The speaker labels changed. Generate the reports again so they match the updated roles.")
-    
+
         can_generate = bool(role_transcript.strip()) and (len(speaker_ids) < 2 or len(set(mapping.values())) == len(mapping.values()))
         if st.button("Confirm roles & generate reports", type="primary", use_container_width=True, disabled=not can_generate):
             try:
@@ -746,7 +784,7 @@ with doctor_new_tab:
                 st.error(str(exc))
             except Exception:
                 st.error("Something unexpected interrupted report generation. Please try again.")
-    
+
         st.divider()
         results_label = "نتائج الاستشارة" if language_choice == "Arabic" else "Consultation results"
         review_title = "المراجعة والتنزيل" if language_choice == "Arabic" else "Review and download"
@@ -754,7 +792,7 @@ with doctor_new_tab:
             f'<div class="section-label">{results_label}</div>', unsafe_allow_html=True
         )
         st.subheader(review_title)
-    
+
         language = transcription.get("language_code") or (
             "غير محددة" if language_choice == "Arabic" else "Not provided"
         )
@@ -775,7 +813,7 @@ with doctor_new_tab:
             f'<span class="meta-pill">{turns_label} · {len(labelled_turns)}</span></div>',
             unsafe_allow_html=True,
         )
-    
+
         reports_current = st.session_state.reports and st.session_state.report_mapping == mapping
         if reports_current:
             tab_labels = (
@@ -789,7 +827,7 @@ with doctor_new_tab:
                 "النص" if language_choice == "Arabic" else "Transcript"
             ])
             doctor_tab = patient_tab = None
-    
+
         with transcript_tab:
             render_transcript(display_turns)
             st.download_button(
@@ -801,7 +839,7 @@ with doctor_new_tab:
                 mime="text/plain",
                 use_container_width=True,
             )
-    
+
         if reports_current and doctor_tab and patient_tab:
             reports = st.session_state.reports
             with doctor_tab:
@@ -832,7 +870,7 @@ with doctor_new_tab:
                         type="primary",
                         use_container_width=True,
                     )
-    
+
             send_ready = all(
                 (
                     selected_patient_id,

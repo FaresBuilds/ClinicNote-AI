@@ -1,0 +1,13 @@
+.env
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+venv/
+data/audio/*
+data/transcripts/*
+data/reports/*
+!data/audio/.gitkeep
+!data/transcripts/.gitkeep
+!data/reports/.gitkeep
+

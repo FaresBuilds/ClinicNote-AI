@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -66,6 +67,25 @@ def initialize_database(db_path: str | Path | None = None) -> None:
                 role TEXT NOT NULL CHECK (role IN ('doctor', 'patient')),
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS consultations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doctor_id INTEGER NOT NULL REFERENCES users(id),
+                patient_id INTEGER NOT NULL REFERENCES users(id),
+                delivery_token TEXT NOT NULL UNIQUE,
+                language TEXT NOT NULL CHECK (language IN ('English', 'Arabic')),
+                transcript TEXT NOT NULL,
+                doctor_report_json TEXT NOT NULL,
+                patient_report_json TEXT NOT NULL,
+                doctor_pdf_path TEXT NOT NULL,
+                patient_pdf_path TEXT NOT NULL,
+                audio_path TEXT,
+                created_at TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS consultations_doctor_idx
+                ON consultations(doctor_id, sent_at DESC);
+            CREATE INDEX IF NOT EXISTS consultations_patient_idx
+                ON consultations(patient_id, sent_at DESC);
             """
         )
 
@@ -156,3 +176,115 @@ def authenticate_user(
     if not hmac.compare_digest(candidate, row["password_hash"]):
         return None
     return _user_from_row(row)
+
+
+def list_patients(db_path: str | Path | None = None) -> list[User]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """SELECT id, full_name, email, role FROM users
+               WHERE role = 'patient' ORDER BY lower(full_name), email"""
+        ).fetchall()
+    return [_user_from_row(row) for row in rows]
+
+
+def send_consultation(
+    *,
+    doctor_id: int,
+    patient_id: int,
+    delivery_token: str,
+    language: str,
+    transcript: str,
+    doctor_report: dict[str, Any],
+    patient_report: dict[str, Any],
+    doctor_pdf_path: str,
+    patient_pdf_path: str,
+    audio_path: str | None,
+    db_path: str | Path | None = None,
+) -> int:
+    with connect(db_path) as connection:
+        users = connection.execute(
+            "SELECT id, role FROM users WHERE id IN (?, ?)",
+            (doctor_id, patient_id),
+        ).fetchall()
+        roles = {int(row["id"]): row["role"] for row in users}
+        if roles.get(doctor_id) != "doctor" or roles.get(patient_id) != "patient":
+            raise AuthorizationError(
+                "Only doctors can send reports to patient accounts."
+            )
+        if language not in {"English", "Arabic"} or not transcript.strip():
+            raise AccountError("The consultation is incomplete and cannot be sent.")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """INSERT INTO consultations
+               (doctor_id, patient_id, delivery_token, language, transcript,
+                doctor_report_json, patient_report_json, doctor_pdf_path,
+                patient_pdf_path, audio_path, created_at, sent_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(delivery_token) DO NOTHING""",
+            (
+                doctor_id,
+                patient_id,
+                delivery_token,
+                language,
+                transcript,
+                json.dumps(doctor_report, ensure_ascii=False),
+                json.dumps(patient_report, ensure_ascii=False),
+                doctor_pdf_path,
+                patient_pdf_path,
+                audio_path,
+                now,
+                now,
+            ),
+        )
+        row = connection.execute(
+            """SELECT id, doctor_id, patient_id FROM consultations
+               WHERE delivery_token = ?""",
+            (delivery_token,),
+        ).fetchone()
+        if row["doctor_id"] != doctor_id or row["patient_id"] != patient_id:
+            raise AuthorizationError(
+                "This consultation was already sent to another account."
+            )
+        return int(row["id"])
+
+
+def list_doctor_consultations(
+    doctor_id: int, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """SELECT c.id, c.language, c.transcript, c.doctor_report_json,
+                      c.patient_report_json, c.doctor_pdf_path, c.patient_pdf_path,
+                      c.audio_path, c.sent_at, u.full_name AS patient_name,
+                      u.email AS patient_email
+               FROM consultations c JOIN users u ON u.id = c.patient_id
+               WHERE c.doctor_id = ? ORDER BY c.sent_at DESC, c.id DESC""",
+            (doctor_id,),
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["doctor_report"] = json.loads(item.pop("doctor_report_json"))
+        item["patient_report"] = json.loads(item.pop("patient_report_json"))
+        results.append(item)
+    return results
+
+
+def list_patient_consultations(
+    patient_id: int, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """SELECT c.id, c.language, c.patient_report_json,
+                      c.patient_pdf_path, c.sent_at,
+                      u.full_name AS doctor_name, u.email AS doctor_email
+               FROM consultations c JOIN users u ON u.id = c.doctor_id
+               WHERE c.patient_id = ? ORDER BY c.sent_at DESC, c.id DESC""",
+            (patient_id,),
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["patient_report"] = json.loads(item.pop("patient_report_json"))
+        results.append(item)
+    return results

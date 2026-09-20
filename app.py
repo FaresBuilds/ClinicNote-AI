@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import html
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 from dotenv import load_dotenv
 
+from accounts import (
+    AccountError,
+    authenticate_user,
+    initialize_database,
+    register_user,
+)
 from services import (
     DEFAULT_OPENROUTER_MODEL,
     ServiceError,
@@ -182,6 +189,9 @@ def initialize_state() -> None:
         "doctor_pdf_path": None,
         "patient_pdf_report": None,
         "patient_pdf_path": None,
+        "current_user": None,
+        "delivery_token": None,
+        "sent_consultation_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -292,9 +302,111 @@ def report_text(title: str, report: dict[str, Any], sections: list[tuple[str, st
     return "\n".join(lines)
 
 
+def clear_consultation_state() -> None:
+    for key in (
+        "transcription",
+        "reports",
+        "report_mapping",
+        "audio_path",
+        "doctor_pdf_report",
+        "doctor_pdf_path",
+        "patient_pdf_report",
+        "patient_pdf_path",
+        "delivery_token",
+        "sent_consultation_id",
+    ):
+        st.session_state[key] = None
+
+
+def logout() -> None:
+    clear_consultation_state()
+    st.session_state.current_user = None
+
+
+def render_account_header(user: dict[str, Any]) -> None:
+    name_column, logout_column = st.columns([5, 1])
+    name_column.markdown(
+        f"**{html.escape(user['full_name'])}** · {user['role'].title()}"
+    )
+    if logout_column.button("Logout", use_container_width=True):
+        logout()
+        st.rerun()
+
+
+def render_auth_screen() -> None:
+    login_tab, register_tab = st.tabs(
+        ["Login / تسجيل الدخول", "Create account / إنشاء حساب"]
+    )
+    with login_tab:
+        with st.form("login-form", border=True):
+            st.subheader("Welcome back")
+            email = st.text_input("Email", autocomplete="email")
+            password = st.text_input(
+                "Password", type="password", autocomplete="current-password"
+            )
+            login_submitted = st.form_submit_button(
+                "Login", type="primary", use_container_width=True
+            )
+        if login_submitted:
+            try:
+                authenticated = authenticate_user(email, password)
+                if authenticated is None:
+                    st.error("Invalid email or password.")
+                else:
+                    st.session_state.current_user = authenticated.session_dict()
+                    st.rerun()
+            except sqlite3.Error:
+                st.error("Local account storage is unavailable. Please try again.")
+
+    with register_tab:
+        with st.form("registration-form", border=True):
+            st.subheader("Create your demo account")
+            full_name = st.text_input("Full name")
+            email = st.text_input("Email", key="registration-email", autocomplete="email")
+            password = st.text_input(
+                "Password",
+                type="password",
+                key="registration-password",
+                autocomplete="new-password",
+            )
+            confirmation = st.text_input(
+                "Confirm password",
+                type="password",
+                autocomplete="new-password",
+            )
+            role_label = st.selectbox("Role", ["Doctor", "Patient"])
+            register_submitted = st.form_submit_button(
+                "Create account", type="primary", use_container_width=True
+            )
+        if register_submitted:
+            if password != confirmation:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    register_user(
+                        full_name, email, password, role_label.lower()
+                    )
+                    st.success("Account created. Log in to continue.")
+                except AccountError as exc:
+                    st.error(str(exc))
+                except sqlite3.Error:
+                    st.error("Local account storage is unavailable. Please try again.")
+
+
+def render_patient_dashboard(user: dict[str, Any]) -> None:
+    st.markdown('<div class="section-label">Patient dashboard</div>', unsafe_allow_html=True)
+    st.subheader("Reports sent to you")
+    st.info("No reports have been sent to your account yet.")
+
+
 st.set_page_config(page_title=APP_NAME, page_icon="⚕", layout="wide", initial_sidebar_state="collapsed")
 inject_styles()
 initialize_state()
+try:
+    initialize_database()
+except sqlite3.Error:
+    st.error("Local account storage is unavailable. Please restart the app.")
+    st.stop()
 
 st.markdown(
     """
@@ -306,6 +418,16 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+current_user = st.session_state.current_user
+if not current_user:
+    render_auth_screen()
+    st.stop()
+
+render_account_header(current_user)
+if current_user["role"] == "patient":
+    render_patient_dashboard(current_user)
+    st.stop()
 
 language_choice = st.segmented_control(
     "Consultation language / لغة الاستشارة",

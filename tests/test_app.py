@@ -48,3 +48,30 @@ def test_arabic_mode_localizes_transcript_roles_and_result_metadata():
     assert "اللغة" in rendered_html
     assert "عدد المقاطع" in rendered_html
     assert len(app.exception) == 0
+
+
+def test_complete_pdf_download_appears_when_reports_are_ready():
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(app_path).run(timeout=20)
+    app.session_state["transcription"] = {
+        "speaker_ids": ["speaker_0", "speaker_1"],
+        "turns": [
+            {"speaker_id": "speaker_0", "text": "Hello", "start": 0.0, "end": 1.0},
+            {"speaker_id": "speaker_1", "text": "Headache", "start": 1.1, "end": 2.0},
+        ],
+        "language_code": "eng",
+        "language_probability": 0.99,
+    }
+    app.session_state["reports"] = {"doctor_report": {}, "patient_report": {}}
+    app.session_state["report_mapping"] = {
+        "speaker_0": "Doctor",
+        "speaker_1": "Patient",
+    }
+    app.session_state["pdf_report"] = b"%PDF-test"
+    app.session_state["pdf_path"] = "data/reports/complete-consultation-report.pdf"
+
+    app.run(timeout=20)
+
+    labels = [button.label for button in app.get("download_button")]
+    assert "Download complete PDF report" in labels
+    assert len(app.exception) == 0

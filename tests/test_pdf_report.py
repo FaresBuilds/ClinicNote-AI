@@ -15,7 +15,7 @@ PATIENT_SECTIONS = [
 ]
 
 
-def test_doctor_pdf_contains_transcript_and_only_doctor_report():
+def test_doctor_pdf_contains_only_doctor_report_without_transcript():
     pdf = storage.build_role_report_pdf(
         turns=[
             {"role": "Doctor", "text": "How are you feeling?", "start": 0.0, "end": 2.0},
@@ -33,15 +33,16 @@ def test_doctor_pdf_contains_transcript_and_only_doctor_report():
     assert pdf.startswith(b"%PDF")
     reader = PdfReader(BytesIO(pdf))
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert len(reader.pages) >= 2
-    assert "CONSULTATION TRANSCRIPT" in extracted
-    assert "How are you feeling?" in extracted
+    assert len(reader.pages) >= 1
+    assert "CONSULTATION TRANSCRIPT" not in extracted
+    assert "How are you feeling?" not in extracted
+    assert "Conversation turns" not in extracted
     assert "DOCTOR REPORT" in extracted
     assert "Headache was discussed." in extracted
     assert "PATIENT REPORT" not in extracted
 
 
-def test_patient_pdf_contains_transcript_and_only_patient_report():
+def test_patient_pdf_contains_only_patient_report_without_transcript():
     pdf = storage.build_role_report_pdf(
         turns=[
             {"role": "Doctor", "text": "Please rest.", "start": 0.0, "end": 2.0},
@@ -58,7 +59,9 @@ def test_patient_pdf_contains_transcript_and_only_patient_report():
 
     reader = PdfReader(BytesIO(pdf))
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert "CONSULTATION TRANSCRIPT" in extracted
+    assert "CONSULTATION TRANSCRIPT" not in extracted
+    assert "Please rest." not in extracted
+    assert "Conversation turns" not in extracted
     assert "PATIENT REPORT" in extracted
     assert "Return if symptoms worsen." in extracted
     assert "DOCTOR REPORT" not in extracted
@@ -88,9 +91,9 @@ def test_patient_pdf_supports_arabic_and_saves_locally(tmp_path):
     assert saved.suffix == ".pdf"
     assert saved.read_bytes() == pdf
     reader = PdfReader(saved)
-    assert len(reader.pages) >= 2
+    assert len(reader.pages) >= 1
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert "00:00 - 00:01" in extracted
+    assert "00:00 - 00:01" not in extracted
 
 
 def test_pdf_generation_uses_bundled_fonts_when_os_fonts_are_unavailable(monkeypatch):

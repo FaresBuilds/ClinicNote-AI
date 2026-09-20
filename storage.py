@@ -22,7 +22,6 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     KeepTogether,
-    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -139,14 +138,6 @@ def _pdf_text(value: Any, is_arabic: bool) -> str:
     return escape(text).replace("\n", "<br/>")
 
 
-def _pdf_timestamp(seconds: Any) -> str:
-    try:
-        total = max(0, int(float(seconds)))
-    except (TypeError, ValueError):
-        total = 0
-    return f"{total // 60:02d}:{total % 60:02d}"
-
-
 def build_role_report_pdf(
     *,
     turns: list[dict[str, Any]],
@@ -155,7 +146,7 @@ def build_role_report_pdf(
     audience: str,
     language: str,
 ) -> bytes:
-    """Create one polished transcript-and-report PDF for a doctor or patient."""
+    """Create one polished report-only PDF for a doctor or patient."""
     if audience not in {"doctor", "patient"}:
         raise StorageError("PDF audience must be either doctor or patient.")
     font, bold_font = _register_pdf_fonts()
@@ -245,15 +236,14 @@ def build_role_report_pdf(
             else ("Doctor Consultation Report" if is_doctor else "Patient Consultation Report")
         ),
         "subtitle": (
-            ("نص المحادثة والتوثيق السريري" if is_doctor else "نص المحادثة وملخص مبسط للمريض")
+            ("توثيق سريري منظم للاستشارة" if is_doctor else "ملخص مبسط وسهل الفهم للاستشارة")
             if is_arabic
             else (
-                "Consultation transcript and clinician documentation"
+                "Structured clinical consultation documentation"
                 if is_doctor
-                else "Consultation transcript and patient-friendly summary"
+                else "Clear, patient-friendly consultation summary"
             )
         ),
-        "transcript": "نص الاستشارة" if is_arabic else "CONSULTATION TRANSCRIPT",
         "report": (
             ("تقرير الطبيب" if is_doctor else "تقرير المريض")
             if is_arabic
@@ -261,9 +251,6 @@ def build_role_report_pdf(
         ),
         "language": "اللغة: العربية" if is_arabic else "Language: English",
         "generated": "تاريخ الإنشاء" if is_arabic else "Generated",
-        "turns": "عدد المقاطع" if is_arabic else "Conversation turns",
-        "doctor_role": "الطبيب" if is_arabic else "Doctor",
-        "patient_role": "المريض" if is_arabic else "Patient",
         "fallback": "غير مذكور في المحادثة" if is_arabic else "Not mentioned in the conversation",
         "footer": "Clinical Conversation Companion",
         "page": "صفحة" if is_arabic else "Page",
@@ -311,8 +298,8 @@ def build_role_report_pdf(
         else [p(f'{copy["generated"]}: {generated_at}', small)]
     )
     metadata = Table(
-        [[p(copy["language"], label), p(f'{copy["turns"]}: {len(turns)}', label), generated_cell]],
-        colWidths=[content_width * 0.25, content_width * 0.25, content_width * 0.5],
+        [[p(copy["language"], label), generated_cell]],
+        colWidths=[content_width * 0.35, content_width * 0.65],
     )
     metadata.setStyle(
         TableStyle(
@@ -328,45 +315,9 @@ def build_role_report_pdf(
         )
     )
     story.extend([metadata, Spacer(1, 4 * mm)])
-    story.append(p(copy["transcript"], section_title))
-
-    for turn in turns:
-        role = str(turn.get("role") or "Speaker")
-        shown_role = copy["patient_role"] if role == "Patient" else copy["doctor_role"]
-        timestamp = f"{_pdf_timestamp(turn.get('start'))} - {_pdf_timestamp(turn.get('end'))}"
-        role_color = teal if role == "Patient" else blue
-        background = colors.HexColor("#ECFEFF") if role == "Patient" else colors.HexColor("#EFF6FF")
-        role_style = ParagraphStyle(
-            f"Role{role}", parent=label, textColor=role_color, fontSize=9, spaceAfter=0
-        )
-        head = Table(
-            [[p(shown_role, role_style), Paragraph(escape(timestamp), small_ltr)]],
-            colWidths=[content_width * 0.68, content_width * 0.32],
-        )
-        head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-        card = Table(
-            [[head], [p(turn.get("text") or copy["fallback"]) ]],
-            colWidths=[content_width],
-        )
-        card.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), background),
-                    ("BOX", (0, 0), (-1, -1), 0.7, line),
-                    ("LINEBEFORE", (0, 0), (0, -1), 3, role_color),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                    ("TOPPADDING", (0, 0), (-1, 0), 7),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 2),
-                    ("TOPPADDING", (0, 1), (-1, 1), 2),
-                    ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
-                ]
-            )
-        )
-        story.extend([KeepTogether(card), Spacer(1, 2.4 * mm)])
 
     def add_report(title: str, report: dict[str, Any], sections: list[tuple[str, str, str]], accent: Any) -> None:
-        story.extend([PageBreak(), p(title, section_title)])
+        story.append(p(title, section_title))
         for key, section_label, _ in sections:
             value = report.get(key)
             items = value if isinstance(value, list) else [value]
@@ -382,12 +333,12 @@ def build_role_report_pdf(
                         ("LINEBEFORE", (0, 0), (0, -1), 3, accent),
                         ("LEFTPADDING", (0, 0), (-1, -1), 10),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                        ("TOPPADDING", (0, 0), (-1, -1), 6),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                     ]
                 )
             )
-            story.extend([KeepTogether(card), Spacer(1, 3 * mm)])
+            story.extend([KeepTogether(card), Spacer(1, 2 * mm)])
 
     add_report(copy["report"], report, sections, blue if is_doctor else teal)
     document.build(story, onFirstPage=page_decor, onLaterPages=page_decor)

@@ -33,6 +33,19 @@ from reportlab.platypus import (
 
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".mpeg", ".mpga", ".webm", ".ogg"}
 MAX_AUDIO_BYTES = 500 * 1024 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parent
+BUNDLED_REGULAR_FONT = PROJECT_ROOT / "assets" / "fonts" / "Amiri-Regular.ttf"
+BUNDLED_BOLD_FONT = PROJECT_ROOT / "assets" / "fonts" / "Amiri-Bold.ttf"
+SYSTEM_REGULAR_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arial.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    Path("/Library/Fonts/Arial Unicode.ttf"),
+]
+SYSTEM_BOLD_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    Path("/Library/Fonts/Arial Bold.ttf"),
+]
 
 
 class StorageError(ValueError):
@@ -106,25 +119,17 @@ def save_pdf(directory: str | Path, data: bytes, prefix: str) -> Path:
 
 
 def _register_pdf_fonts() -> tuple[str, str]:
-    regular_candidates = [
-        Path("C:/Windows/Fonts/arial.ttf"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path("/Library/Fonts/Arial Unicode.ttf"),
-    ]
-    bold_candidates = [
-        Path("C:/Windows/Fonts/arialbd.ttf"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        Path("/Library/Fonts/Arial Bold.ttf"),
-    ]
+    regular_candidates = [BUNDLED_REGULAR_FONT, *SYSTEM_REGULAR_FONT_CANDIDATES]
+    bold_candidates = [BUNDLED_BOLD_FONT, *SYSTEM_BOLD_FONT_CANDIDATES]
     regular = next((path for path in regular_candidates if path.exists()), None)
     bold = next((path for path in bold_candidates if path.exists()), regular)
     if regular is None or bold is None:
         raise StorageError("A Unicode font is required to create the PDF report.")
-    if "MedicalPDF" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("MedicalPDF", str(regular)))
-    if "MedicalPDFBold" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("MedicalPDFBold", str(bold)))
-    return "MedicalPDF", "MedicalPDFBold"
+    if "MedicalPDFAmiri" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("MedicalPDFAmiri", str(regular)))
+    if "MedicalPDFAmiriBold" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("MedicalPDFAmiriBold", str(bold)))
+    return "MedicalPDFAmiri", "MedicalPDFAmiriBold"
 
 
 def _pdf_text(value: Any, is_arabic: bool) -> str:

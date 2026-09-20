@@ -91,3 +91,27 @@ def test_patient_pdf_supports_arabic_and_saves_locally(tmp_path):
     assert len(reader.pages) >= 2
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "00:00 - 00:01" in extracted
+
+
+def test_pdf_generation_uses_bundled_fonts_when_os_fonts_are_unavailable(monkeypatch):
+    monkeypatch.setattr(storage, "SYSTEM_REGULAR_FONT_CANDIDATES", [])
+    monkeypatch.setattr(storage, "SYSTEM_BOLD_FONT_CANDIDATES", [])
+
+    assert storage.BUNDLED_REGULAR_FONT.is_file()
+    assert storage.BUNDLED_BOLD_FONT.is_file()
+
+    pdf = storage.build_role_report_pdf(
+        turns=[
+            {"role": "Doctor", "text": "How are you?", "start": 0.0, "end": 1.0},
+            {"role": "Patient", "text": "أشعر بصداع.", "start": 1.1, "end": 2.0},
+        ],
+        report={
+            "what_was_discussed": "تمت مناقشة الصداع.",
+            "things_to_remember": ["Follow the doctor's instructions."],
+        },
+        sections=PATIENT_SECTIONS,
+        audience="patient",
+        language="Arabic",
+    )
+
+    assert pdf.startswith(b"%PDF")

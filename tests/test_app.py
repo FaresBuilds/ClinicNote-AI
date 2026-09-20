@@ -130,3 +130,79 @@ def test_separate_doctor_and_patient_pdf_downloads_appear_when_reports_are_ready
     assert "Download patient PDF report" in labels
     assert "Download complete PDF report" not in labels
     assert len(app.exception) == 0
+
+
+def test_doctor_can_select_registered_patient_and_send_ready_reports(
+    monkeypatch, tmp_path
+):
+    app, doctor, db = _authenticated_app(monkeypatch, tmp_path, "doctor")
+    patient = accounts.register_user(
+        "Mona Patient", "mona@example.com", "password-2", "patient", db
+    )
+    app.session_state["transcription"] = {
+        "speaker_ids": ["speaker_0", "speaker_1"],
+        "turns": [
+            {"speaker_id": "speaker_0", "text": "Hello", "start": 0.0, "end": 1.0},
+            {
+                "speaker_id": "speaker_1",
+                "text": "Headache",
+                "start": 1.1,
+                "end": 2.0,
+            },
+        ],
+        "language_code": "eng",
+        "language_probability": 0.99,
+    }
+    app.session_state["reports"] = {
+        "doctor_report": {"consultation_summary": "Headache discussed."},
+        "patient_report": {"what_was_discussed": "Your headache."},
+    }
+    app.session_state["report_mapping"] = {
+        "speaker_0": "Doctor",
+        "speaker_1": "Patient",
+    }
+    app.session_state["doctor_pdf_report"] = b"%PDF-doctor"
+    app.session_state["doctor_pdf_path"] = "data/reports/doctor.pdf"
+    app.session_state["patient_pdf_report"] = b"%PDF-patient"
+    app.session_state["patient_pdf_path"] = "data/reports/patient.pdf"
+    app.session_state["delivery_token"] = "delivery-1"
+    app.session_state["audio_path"] = "data/audio/visit.wav"
+    app.run(timeout=20)
+
+    patient_selector = next(
+        box for box in app.selectbox if box.label == "Send report to patient"
+    )
+    patient_selector.set_value(patient.id).run(timeout=20)
+    next(
+        button for button in app.button if button.label == "Send to patient"
+    ).click().run(timeout=20)
+
+    history = accounts.list_doctor_consultations(doctor.id, db)
+    assert len(history) == 1
+    assert history[0]["patient_email"] == "mona@example.com"
+
+
+def test_doctor_history_survives_missing_pdf_files(monkeypatch, tmp_path):
+    app, doctor, db = _authenticated_app(monkeypatch, tmp_path, "doctor")
+    patient = accounts.register_user(
+        "Mona", "mona@example.com", "password-2", "patient", db
+    )
+    accounts.send_consultation(
+        doctor_id=doctor.id,
+        patient_id=patient.id,
+        delivery_token="delivery-1",
+        language="English",
+        transcript="Doctor: Hello",
+        doctor_report={"consultation_summary": "Clinical summary"},
+        patient_report={"what_was_discussed": "Patient summary"},
+        doctor_pdf_path="missing-doctor.pdf",
+        patient_pdf_path="missing-patient.pdf",
+        audio_path=None,
+        db_path=db,
+    )
+    app.run(timeout=20)
+    rendered = "\n".join(item.value for item in app.markdown)
+    assert "Clinical summary" in rendered
+    assert "Patient summary" in rendered
+    assert "PDF file is no longer available" in rendered
+    assert len(app.exception) == 0

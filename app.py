@@ -7,6 +7,7 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -15,7 +16,10 @@ from accounts import (
     AccountError,
     authenticate_user,
     initialize_database,
+    list_doctor_consultations,
+    list_patients,
     register_user,
+    send_consultation,
 )
 from services import (
     DEFAULT_OPENROUTER_MODEL,
@@ -288,6 +292,13 @@ def render_report(report: dict[str, Any], sections: list[tuple[str, str, str]], 
         )
 
 
+def localized_sections(
+    sections: list[tuple[str, str, str]], language: str
+) -> list[tuple[str, str, str]]:
+    labels = ARABIC_SECTION_LABELS if language == "Arabic" else {}
+    return [(key, labels.get(key, label), icon) for key, label, icon in sections]
+
+
 def report_text(title: str, report: dict[str, Any], sections: list[tuple[str, str, str]]) -> str:
     lines = [title, "=" * len(title), ""]
     for key, label, _ in sections:
@@ -399,6 +410,65 @@ def render_patient_dashboard(user: dict[str, Any]) -> None:
     st.info("No reports have been sent to your account yet.")
 
 
+def render_saved_pdf(path_value: str, label: str, key: str, file_name: str) -> None:
+    pdf_path = Path(path_value)
+    if pdf_path.is_file():
+        st.download_button(
+            label,
+            data=pdf_path.read_bytes(),
+            file_name=file_name,
+            mime="application/pdf",
+            key=key,
+            use_container_width=True,
+        )
+    else:
+        st.markdown("PDF file is no longer available.")
+
+
+def render_doctor_history(user: dict[str, Any]) -> None:
+    st.markdown('<div class="section-label">Doctor dashboard</div>', unsafe_allow_html=True)
+    st.subheader("Report history")
+    try:
+        history = list_doctor_consultations(user["id"])
+    except (AccountError, sqlite3.Error):
+        st.error("Consultation history is unavailable. Please try again.")
+        return
+    if not history:
+        st.info("No consultations have been sent yet.")
+        return
+
+    for item in history:
+        sent_at = str(item["sent_at"])[:16].replace("T", " ")
+        with st.expander(
+            f"{item['patient_name']} · {sent_at} · {item['language']}",
+            expanded=True,
+        ):
+            st.markdown("#### Doctor Report")
+            render_report(
+                item["doctor_report"],
+                localized_sections(DOCTOR_SECTIONS, item["language"]),
+                "doctor",
+            )
+            render_saved_pdf(
+                item["doctor_pdf_path"],
+                "Download doctor PDF report",
+                f"doctor-history-pdf-{item['id']}",
+                f"doctor-report-{item['id']}.pdf",
+            )
+            st.markdown("#### Patient Report")
+            render_report(
+                item["patient_report"],
+                localized_sections(PATIENT_SECTIONS, item["language"]),
+                "patient",
+            )
+            render_saved_pdf(
+                item["patient_pdf_path"],
+                "Download patient PDF report",
+                f"patient-history-pdf-{item['id']}",
+                f"patient-report-{item['id']}.pdf",
+            )
+
+
 st.set_page_config(page_title=APP_NAME, page_icon="⚕", layout="wide", initial_sidebar_state="collapsed")
 inject_styles()
 initialize_state()
@@ -429,338 +499,404 @@ if current_user["role"] == "patient":
     render_patient_dashboard(current_user)
     st.stop()
 
-language_choice = st.segmented_control(
-    "Consultation language / لغة الاستشارة",
-    ["English", "Arabic"],
-    default="English",
-    format_func=lambda value: "English" if value == "English" else "العربية",
-    key="consultation_language",
-    on_change=lambda: st.session_state.update(
-        transcription=None,
-        reports=None,
-        report_mapping=None,
-        audio_path=None,
-        doctor_pdf_report=None,
-        doctor_pdf_path=None,
-        patient_pdf_report=None,
-        patient_pdf_path=None,
-    ),
-    help="Choose the language spoken in the recording. Reports use the same language.",
-    width="stretch",
-)
-language_choice = language_choice or "English"
-language_code = "ara" if language_choice == "Arabic" else "eng"
-section_labels = ARABIC_SECTION_LABELS if language_choice == "Arabic" else {}
-doctor_sections = [
-    (key, section_labels.get(key, label), icon) for key, label, icon in DOCTOR_SECTIONS
-]
-patient_sections = [
-    (key, section_labels.get(key, label), icon) for key, label, icon in PATIENT_SECTIONS
-]
-doctor_report_title = "تقرير الطبيب" if language_choice == "Arabic" else "Doctor Report"
-patient_report_title = "تقرير المريض" if language_choice == "Arabic" else "Patient Report"
-
-active_step = 3 if st.session_state.reports else (2 if st.session_state.transcription else 1)
-render_steps(active_step)
-
-st.markdown('<div class="section-label">New consultation</div>', unsafe_allow_html=True)
-st.subheader("Add the conversation audio")
-st.caption(
-    "Upload an existing recording or capture one from your microphone. "
-    "The selected language is used for transcription and reports."
-)
-
-with st.container(border=True):
-    mode = st.radio("Audio source", ["Upload audio", "Record now"], horizontal=True, label_visibility="collapsed")
-    if mode == "Upload audio":
-        uploaded_file = st.file_uploader(
-            "Drop a consultation recording here",
-            type=["wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg"],
-            help="Supported: WAV, MP3, M4A, MP4, MPEG, MPGA, WEBM, and OGG — up to 500 MB.",
-        )
-        recorded_file = None
-    else:
-        uploaded_file = None
-        access_message = microphone_access_message(
-            str(st.context.url), bool(st.context.is_embedded)
-        )
-        if access_message:
-            st.warning(access_message)
-        st.caption(
-            "Click the microphone once to start and again to stop. If it remains at 00:00, "
-            "open this page directly in Chrome or Edge and allow microphone access."
-        )
-        recorded_file = st.audio_input(
-            "Record the consultation",
-            sample_rate=16000,
-            key="consultation_recording",
-            help="Your browser will ask for microphone permission the first time.",
-        )
-
-    audio_selection = None
+doctor_new_tab, doctor_history_tab = st.tabs(["New Consultation", "Report history"])
+with doctor_new_tab:
+    selected_patient_id = None
     try:
-        audio_selection = selected_audio(mode, uploaded_file, recorded_file)
-    except StorageError as exc:
-        st.error(str(exc))
+        patients = list_patients()
+        patient_options = {
+            patient.id: f"{patient.full_name} · {patient.email}" for patient in patients
+        }
+        selected_patient_id = st.selectbox(
+            "Send report to patient",
+            options=list(patient_options),
+            format_func=patient_options.get,
+            index=None,
+            placeholder="Choose a registered patient",
+        )
+        if not patients:
+            st.caption("Create a Patient account before sending a consultation.")
+    except (AccountError, sqlite3.Error):
+        st.error("Patient accounts are unavailable. Please try again.")
 
-    if audio_selection:
-        preview_name, preview_bytes = audio_selection
-        st.audio(preview_bytes)
-        st.caption(f"Ready: {preview_name} · {len(preview_bytes) / (1024 * 1024):.1f} MB")
-
-    if st.button("Transcribe conversation", type="primary", use_container_width=True):
-        if not audio_selection:
-            st.warning("Choose or record an audio conversation first.")
+    language_choice = st.segmented_control(
+        "Consultation language / لغة الاستشارة",
+        ["English", "Arabic"],
+        default="English",
+        format_func=lambda value: "English" if value == "English" else "العربية",
+        key="consultation_language",
+        on_change=lambda: st.session_state.update(
+            transcription=None,
+            reports=None,
+            report_mapping=None,
+            audio_path=None,
+            doctor_pdf_report=None,
+            doctor_pdf_path=None,
+            patient_pdf_report=None,
+            patient_pdf_path=None,
+            delivery_token=None,
+            sent_consultation_id=None,
+        ),
+        help="Choose the language spoken in the recording. Reports use the same language.",
+        width="stretch",
+    )
+    language_choice = language_choice or "English"
+    language_code = "ara" if language_choice == "Arabic" else "eng"
+    section_labels = ARABIC_SECTION_LABELS if language_choice == "Arabic" else {}
+    doctor_sections = [
+        (key, section_labels.get(key, label), icon) for key, label, icon in DOCTOR_SECTIONS
+    ]
+    patient_sections = [
+        (key, section_labels.get(key, label), icon) for key, label, icon in PATIENT_SECTIONS
+    ]
+    doctor_report_title = "تقرير الطبيب" if language_choice == "Arabic" else "Doctor Report"
+    patient_report_title = "تقرير المريض" if language_choice == "Arabic" else "Patient Report"
+    
+    active_step = 3 if st.session_state.reports else (2 if st.session_state.transcription else 1)
+    render_steps(active_step)
+    
+    st.markdown('<div class="section-label">New consultation</div>', unsafe_allow_html=True)
+    st.subheader("Add the conversation audio")
+    st.caption(
+        "Upload an existing recording or capture one from your microphone. "
+        "The selected language is used for transcription and reports."
+    )
+    
+    with st.container(border=True):
+        mode = st.radio("Audio source", ["Upload audio", "Record now"], horizontal=True, label_visibility="collapsed")
+        if mode == "Upload audio":
+            uploaded_file = st.file_uploader(
+                "Drop a consultation recording here",
+                type=["wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg"],
+                help="Supported: WAV, MP3, M4A, MP4, MPEG, MPGA, WEBM, and OGG — up to 500 MB.",
+            )
+            recorded_file = None
         else:
+            uploaded_file = None
+            access_message = microphone_access_message(
+                str(st.context.url), bool(st.context.is_embedded)
+            )
+            if access_message:
+                st.warning(access_message)
+            st.caption(
+                "Click the microphone once to start and again to stop. If it remains at 00:00, "
+                "open this page directly in Chrome or Edge and allow microphone access."
+            )
+            recorded_file = st.audio_input(
+                "Record the consultation",
+                sample_rate=16000,
+                key="consultation_recording",
+                help="Your browser will ask for microphone permission the first time.",
+            )
+    
+        audio_selection = None
+        try:
+            audio_selection = selected_audio(mode, uploaded_file, recorded_file)
+        except StorageError as exc:
+            st.error(str(exc))
+    
+        if audio_selection:
+            preview_name, preview_bytes = audio_selection
+            st.audio(preview_bytes)
+            st.caption(f"Ready: {preview_name} · {len(preview_bytes) / (1024 * 1024):.1f} MB")
+    
+        if st.button("Transcribe conversation", type="primary", use_container_width=True):
+            if not audio_selection:
+                st.warning("Choose or record an audio conversation first.")
+            else:
+                try:
+                    elevenlabs_key, _, _ = require_keys()
+                    filename, audio_bytes = audio_selection
+                    with st.status("Transcribing conversation…", expanded=True) as status:
+                        st.write("Uploading the recording securely from this local app…")
+                        audio_path = save_bytes(AUDIO_DIR, audio_bytes, filename)
+                        transcription = transcribe_audio(
+                            audio_bytes,
+                            filename,
+                            elevenlabs_key,
+                            language_code=language_code,
+                        )
+                        neutral_text = neutral_transcript(transcription["turns"], transcription["speaker_ids"])
+                        save_text(TRANSCRIPT_DIR, neutral_text, "speaker-transcript")
+                        if transcription.get("diarization_fallback_used"):
+                            status.write("Speaker separation was strengthened with a second timing pass.")
+                        status.write("Speaker-separated transcript is ready.")
+                        status.update(label="Transcription complete", state="complete", expanded=False)
+                    st.session_state.transcription = transcription
+                    st.session_state.reports = None
+                    st.session_state.report_mapping = None
+                    st.session_state.doctor_pdf_report = None
+                    st.session_state.doctor_pdf_path = None
+                    st.session_state.patient_pdf_report = None
+                    st.session_state.patient_pdf_path = None
+                    st.session_state.delivery_token = None
+                    st.session_state.sent_consultation_id = None
+                    st.session_state.audio_path = str(audio_path)
+                    st.rerun()
+                except (StorageError, ServiceError) as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("Something unexpected interrupted transcription. Please retry with a valid recording.")
+    
+    
+    transcription = st.session_state.transcription
+    if transcription:
+        st.markdown('<div class="section-label">Speaker review</div>', unsafe_allow_html=True)
+        st.subheader("Confirm who is speaking")
+        st.caption("Diarization separates voices but does not identify roles. Confirm each label before generating reports.")
+    
+        speaker_ids = transcription["speaker_ids"]
+        role_columns = st.columns(max(1, len(speaker_ids)))
+        mapping: dict[str, str] = {}
+        for index, speaker_id in enumerate(speaker_ids):
+            with role_columns[index]:
+                mapping[speaker_id] = st.selectbox(
+                    speaker_title(speaker_id, speaker_ids),
+                    ["Doctor", "Patient"],
+                    index=0 if index == 0 else 1,
+                    key=f"role_{speaker_id}",
+                    format_func=(
+                        (lambda role: "الطبيب" if role == "Doctor" else "المريض")
+                        if language_choice == "Arabic"
+                        else str
+                    ),
+                    help="This is a manual label. The application does not infer clinical roles.",
+                )
+    
+        if len(speaker_ids) < 2:
+            st.info("Only one distinct voice was detected. You can still label it, but two-sided reporting may be limited.")
+        elif len(set(mapping.values())) != len(mapping.values()):
+            st.warning("Assign one speaker as Doctor and the other as Patient before generating reports.")
+    
+        labelled_turns = apply_speaker_roles(transcription["turns"], mapping)
+        role_transcript = format_transcript(labelled_turns)
+        if language_choice == "Arabic":
+            role_labels = {"Doctor": "الطبيب", "Patient": "المريض"}
+            display_turns = [
+                {**turn, "display_role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
+                for turn in labelled_turns
+            ]
+            transcript_download = format_transcript(
+                [
+                    {**turn, "role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
+                    for turn in labelled_turns
+                ]
+            )
+        else:
+            display_turns = labelled_turns
+            transcript_download = role_transcript
+    
+        if st.session_state.reports and st.session_state.report_mapping != mapping:
+            st.info("The speaker labels changed. Generate the reports again so they match the updated roles.")
+    
+        can_generate = bool(role_transcript.strip()) and (len(speaker_ids) < 2 or len(set(mapping.values())) == len(mapping.values()))
+        if st.button("Confirm roles & generate reports", type="primary", use_container_width=True, disabled=not can_generate):
             try:
-                elevenlabs_key, _, _ = require_keys()
-                filename, audio_bytes = audio_selection
-                with st.status("Transcribing conversation…", expanded=True) as status:
-                    st.write("Uploading the recording securely from this local app…")
-                    audio_path = save_bytes(AUDIO_DIR, audio_bytes, filename)
-                    transcription = transcribe_audio(
-                        audio_bytes,
-                        filename,
-                        elevenlabs_key,
-                        language_code=language_code,
+                _, openrouter_key, model = require_keys()
+                with st.status("Analyzing consultation…", expanded=True) as status:
+                    st.write("Reviewing stated symptoms, history, medicines, tests, and recommendations…")
+                    status.update(label="Generating reports…", state="running", expanded=True)
+                    reports = generate_reports(
+                        role_transcript,
+                        openrouter_key,
+                        model=model,
+                        output_language=language_choice,
                     )
-                    neutral_text = neutral_transcript(transcription["turns"], transcription["speaker_ids"])
-                    save_text(TRANSCRIPT_DIR, neutral_text, "speaker-transcript")
-                    if transcription.get("diarization_fallback_used"):
-                        status.write("Speaker separation was strengthened with a second timing pass.")
-                    status.write("Speaker-separated transcript is ready.")
-                    status.update(label="Transcription complete", state="complete", expanded=False)
-                st.session_state.transcription = transcription
-                st.session_state.reports = None
-                st.session_state.report_mapping = None
-                st.session_state.doctor_pdf_report = None
-                st.session_state.doctor_pdf_path = None
-                st.session_state.patient_pdf_report = None
-                st.session_state.patient_pdf_path = None
-                st.session_state.audio_path = str(audio_path)
+                    doctor_download = report_text(
+                        doctor_report_title, reports["doctor_report"], doctor_sections
+                    )
+                    patient_download = report_text(
+                        patient_report_title, reports["patient_report"], patient_sections
+                    )
+                    save_text(TRANSCRIPT_DIR, role_transcript, "role-labelled-transcript")
+                    save_text(REPORT_DIR, doctor_download, "doctor-report")
+                    save_text(REPORT_DIR, patient_download, "patient-report")
+                    doctor_pdf_report = build_role_report_pdf(
+                        turns=labelled_turns,
+                        report=reports["doctor_report"],
+                        sections=doctor_sections,
+                        audience="doctor",
+                        language=language_choice,
+                    )
+                    patient_pdf_report = build_role_report_pdf(
+                        turns=labelled_turns,
+                        report=reports["patient_report"],
+                        sections=patient_sections,
+                        audience="patient",
+                        language=language_choice,
+                    )
+                    doctor_pdf_path = save_pdf(
+                        REPORT_DIR, doctor_pdf_report, "doctor-consultation-report"
+                    )
+                    patient_pdf_path = save_pdf(
+                        REPORT_DIR, patient_pdf_report, "patient-consultation-report"
+                    )
+                    status.write("Both consultation reports are ready.")
+                    status.update(label="Reports complete", state="complete", expanded=False)
+                st.session_state.reports = reports
+                st.session_state.report_mapping = mapping.copy()
+                st.session_state.doctor_pdf_report = doctor_pdf_report
+                st.session_state.doctor_pdf_path = str(doctor_pdf_path)
+                st.session_state.patient_pdf_report = patient_pdf_report
+                st.session_state.patient_pdf_path = str(patient_pdf_path)
+                st.session_state.delivery_token = uuid4().hex
+                st.session_state.sent_consultation_id = None
                 st.rerun()
             except (StorageError, ServiceError) as exc:
                 st.error(str(exc))
             except Exception:
-                st.error("Something unexpected interrupted transcription. Please retry with a valid recording.")
-
-
-transcription = st.session_state.transcription
-if transcription:
-    st.markdown('<div class="section-label">Speaker review</div>', unsafe_allow_html=True)
-    st.subheader("Confirm who is speaking")
-    st.caption("Diarization separates voices but does not identify roles. Confirm each label before generating reports.")
-
-    speaker_ids = transcription["speaker_ids"]
-    role_columns = st.columns(max(1, len(speaker_ids)))
-    mapping: dict[str, str] = {}
-    for index, speaker_id in enumerate(speaker_ids):
-        with role_columns[index]:
-            mapping[speaker_id] = st.selectbox(
-                speaker_title(speaker_id, speaker_ids),
-                ["Doctor", "Patient"],
-                index=0 if index == 0 else 1,
-                key=f"role_{speaker_id}",
-                format_func=(
-                    (lambda role: "الطبيب" if role == "Doctor" else "المريض")
-                    if language_choice == "Arabic"
-                    else str
-                ),
-                help="This is a manual label. The application does not infer clinical roles.",
-            )
-
-    if len(speaker_ids) < 2:
-        st.info("Only one distinct voice was detected. You can still label it, but two-sided reporting may be limited.")
-    elif len(set(mapping.values())) != len(mapping.values()):
-        st.warning("Assign one speaker as Doctor and the other as Patient before generating reports.")
-
-    labelled_turns = apply_speaker_roles(transcription["turns"], mapping)
-    role_transcript = format_transcript(labelled_turns)
-    if language_choice == "Arabic":
-        role_labels = {"Doctor": "الطبيب", "Patient": "المريض"}
-        display_turns = [
-            {**turn, "display_role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
-            for turn in labelled_turns
-        ]
-        transcript_download = format_transcript(
-            [
-                {**turn, "role": role_labels.get(str(turn.get("role")), str(turn.get("role")))}
-                for turn in labelled_turns
-            ]
+                st.error("Something unexpected interrupted report generation. Please try again.")
+    
+        st.divider()
+        results_label = "نتائج الاستشارة" if language_choice == "Arabic" else "Consultation results"
+        review_title = "المراجعة والتنزيل" if language_choice == "Arabic" else "Review and download"
+        st.markdown(
+            f'<div class="section-label">{results_label}</div>', unsafe_allow_html=True
         )
-    else:
-        display_turns = labelled_turns
-        transcript_download = role_transcript
-
-    if st.session_state.reports and st.session_state.report_mapping != mapping:
-        st.info("The speaker labels changed. Generate the reports again so they match the updated roles.")
-
-    can_generate = bool(role_transcript.strip()) and (len(speaker_ids) < 2 or len(set(mapping.values())) == len(mapping.values()))
-    if st.button("Confirm roles & generate reports", type="primary", use_container_width=True, disabled=not can_generate):
-        try:
-            _, openrouter_key, model = require_keys()
-            with st.status("Analyzing consultation…", expanded=True) as status:
-                st.write("Reviewing stated symptoms, history, medicines, tests, and recommendations…")
-                status.update(label="Generating reports…", state="running", expanded=True)
-                reports = generate_reports(
-                    role_transcript,
-                    openrouter_key,
-                    model=model,
-                    output_language=language_choice,
+        st.subheader(review_title)
+    
+        language = transcription.get("language_code") or (
+            "غير محددة" if language_choice == "Arabic" else "Not provided"
+        )
+        confidence = transcription.get("language_probability")
+        confidence_text = (
+            f"{confidence:.0%}"
+            if isinstance(confidence, (float, int))
+            else ("غير متاحة" if language_choice == "Arabic" else "Not provided")
+        )
+        language_label = "اللغة" if language_choice == "Arabic" else "Language"
+        confidence_label = (
+            "دقة تحديد اللغة" if language_choice == "Arabic" else "Language confidence"
+        )
+        turns_label = "عدد المقاطع" if language_choice == "Arabic" else "Turns"
+        st.markdown(
+            f'<div class="meta-row"><span class="meta-pill">{language_label} · {html.escape(str(language).upper())}</span>'
+            f'<span class="meta-pill">{confidence_label} · {confidence_text}</span>'
+            f'<span class="meta-pill">{turns_label} · {len(labelled_turns)}</span></div>',
+            unsafe_allow_html=True,
+        )
+    
+        reports_current = st.session_state.reports and st.session_state.report_mapping == mapping
+        if reports_current:
+            tab_labels = (
+                ["النص", "تقرير الطبيب", "تقرير المريض"]
+                if language_choice == "Arabic"
+                else ["Transcript", "Doctor Report", "Patient Report"]
+            )
+            transcript_tab, doctor_tab, patient_tab = st.tabs(tab_labels)
+        else:
+            (transcript_tab,) = st.tabs([
+                "النص" if language_choice == "Arabic" else "Transcript"
+            ])
+            doctor_tab = patient_tab = None
+    
+        with transcript_tab:
+            render_transcript(display_turns)
+            st.download_button(
+                "تنزيل النص بصيغة TXT"
+                if language_choice == "Arabic"
+                else "Download transcript as TXT",
+                data=transcript_download.encode("utf-8"),
+                file_name="consultation-transcript.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+    
+        if reports_current and doctor_tab and patient_tab:
+            reports = st.session_state.reports
+            with doctor_tab:
+                st.caption(
+                    "توثيق موجّه للطبيب ومُنشأ فقط من المحادثة المسجلة."
+                    if language_choice == "Arabic"
+                    else "Clinician-facing documentation generated only from the recorded conversation."
                 )
+                render_report(reports["doctor_report"], doctor_sections, "doctor")
                 doctor_download = report_text(
                     doctor_report_title, reports["doctor_report"], doctor_sections
                 )
+                st.download_button(
+                    "تنزيل تقرير الطبيب" if language_choice == "Arabic" else "Download doctor report",
+                    data=doctor_download.encode("utf-8"),
+                    file_name="doctor-report.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+                if st.session_state.doctor_pdf_report:
+                    st.download_button(
+                        "تنزيل تقرير الطبيب بصيغة PDF"
+                        if language_choice == "Arabic"
+                        else "Download doctor PDF report",
+                        data=st.session_state.doctor_pdf_report,
+                        file_name="doctor-consultation-report.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True,
+                    )
+    
+            send_ready = all(
+                (
+                    selected_patient_id,
+                    st.session_state.delivery_token,
+                    st.session_state.doctor_pdf_path,
+                    st.session_state.patient_pdf_path,
+                )
+            )
+            already_sent = st.session_state.sent_consultation_id is not None
+            if st.button(
+                "إرسال إلى المريض"
+                if language_choice == "Arabic"
+                else "Send to patient",
+                type="primary",
+                use_container_width=True,
+                disabled=not send_ready or already_sent,
+            ):
+                try:
+                    consultation_id = send_consultation(
+                        doctor_id=current_user["id"],
+                        patient_id=selected_patient_id,
+                        delivery_token=st.session_state.delivery_token,
+                        language=language_choice,
+                        transcript=role_transcript,
+                        doctor_report=st.session_state.reports["doctor_report"],
+                        patient_report=st.session_state.reports["patient_report"],
+                        doctor_pdf_path=st.session_state.doctor_pdf_path,
+                        patient_pdf_path=st.session_state.patient_pdf_path,
+                        audio_path=st.session_state.audio_path,
+                    )
+                    st.session_state.sent_consultation_id = consultation_id
+                    st.success("The consultation was sent to the patient account.")
+                except AccountError as exc:
+                    st.error(str(exc))
+                except sqlite3.Error:
+                    st.error("The consultation could not be sent. Please try again.")
+            with patient_tab:
+                st.caption(
+                    "ملخص بلغة بسيطة. اتبع تعليمات الطبيب المباشرة إذا اختلفت عن هذا الملخص."
+                    if language_choice == "Arabic"
+                    else "A plain-language recap. Follow the clinician's direct advice if it differs from this summary."
+                )
+                render_report(reports["patient_report"], patient_sections, "patient")
                 patient_download = report_text(
                     patient_report_title, reports["patient_report"], patient_sections
                 )
-                save_text(TRANSCRIPT_DIR, role_transcript, "role-labelled-transcript")
-                save_text(REPORT_DIR, doctor_download, "doctor-report")
-                save_text(REPORT_DIR, patient_download, "patient-report")
-                doctor_pdf_report = build_role_report_pdf(
-                    turns=labelled_turns,
-                    report=reports["doctor_report"],
-                    sections=doctor_sections,
-                    audience="doctor",
-                    language=language_choice,
-                )
-                patient_pdf_report = build_role_report_pdf(
-                    turns=labelled_turns,
-                    report=reports["patient_report"],
-                    sections=patient_sections,
-                    audience="patient",
-                    language=language_choice,
-                )
-                doctor_pdf_path = save_pdf(
-                    REPORT_DIR, doctor_pdf_report, "doctor-consultation-report"
-                )
-                patient_pdf_path = save_pdf(
-                    REPORT_DIR, patient_pdf_report, "patient-consultation-report"
-                )
-                status.write("Both consultation reports are ready.")
-                status.update(label="Reports complete", state="complete", expanded=False)
-            st.session_state.reports = reports
-            st.session_state.report_mapping = mapping.copy()
-            st.session_state.doctor_pdf_report = doctor_pdf_report
-            st.session_state.doctor_pdf_path = str(doctor_pdf_path)
-            st.session_state.patient_pdf_report = patient_pdf_report
-            st.session_state.patient_pdf_path = str(patient_pdf_path)
-            st.rerun()
-        except (StorageError, ServiceError) as exc:
-            st.error(str(exc))
-        except Exception:
-            st.error("Something unexpected interrupted report generation. Please try again.")
-
-    st.divider()
-    results_label = "نتائج الاستشارة" if language_choice == "Arabic" else "Consultation results"
-    review_title = "المراجعة والتنزيل" if language_choice == "Arabic" else "Review and download"
-    st.markdown(
-        f'<div class="section-label">{results_label}</div>', unsafe_allow_html=True
-    )
-    st.subheader(review_title)
-
-    language = transcription.get("language_code") or (
-        "غير محددة" if language_choice == "Arabic" else "Not provided"
-    )
-    confidence = transcription.get("language_probability")
-    confidence_text = (
-        f"{confidence:.0%}"
-        if isinstance(confidence, (float, int))
-        else ("غير متاحة" if language_choice == "Arabic" else "Not provided")
-    )
-    language_label = "اللغة" if language_choice == "Arabic" else "Language"
-    confidence_label = (
-        "دقة تحديد اللغة" if language_choice == "Arabic" else "Language confidence"
-    )
-    turns_label = "عدد المقاطع" if language_choice == "Arabic" else "Turns"
-    st.markdown(
-        f'<div class="meta-row"><span class="meta-pill">{language_label} · {html.escape(str(language).upper())}</span>'
-        f'<span class="meta-pill">{confidence_label} · {confidence_text}</span>'
-        f'<span class="meta-pill">{turns_label} · {len(labelled_turns)}</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    reports_current = st.session_state.reports and st.session_state.report_mapping == mapping
-    if reports_current:
-        tab_labels = (
-            ["النص", "تقرير الطبيب", "تقرير المريض"]
-            if language_choice == "Arabic"
-            else ["Transcript", "Doctor Report", "Patient Report"]
-        )
-        transcript_tab, doctor_tab, patient_tab = st.tabs(tab_labels)
-    else:
-        (transcript_tab,) = st.tabs([
-            "النص" if language_choice == "Arabic" else "Transcript"
-        ])
-        doctor_tab = patient_tab = None
-
-    with transcript_tab:
-        render_transcript(display_turns)
-        st.download_button(
-            "تنزيل النص بصيغة TXT"
-            if language_choice == "Arabic"
-            else "Download transcript as TXT",
-            data=transcript_download.encode("utf-8"),
-            file_name="consultation-transcript.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-
-    if reports_current and doctor_tab and patient_tab:
-        reports = st.session_state.reports
-        with doctor_tab:
-            st.caption(
-                "توثيق موجّه للطبيب ومُنشأ فقط من المحادثة المسجلة."
-                if language_choice == "Arabic"
-                else "Clinician-facing documentation generated only from the recorded conversation."
-            )
-            render_report(reports["doctor_report"], doctor_sections, "doctor")
-            doctor_download = report_text(
-                doctor_report_title, reports["doctor_report"], doctor_sections
-            )
-            st.download_button(
-                "تنزيل تقرير الطبيب" if language_choice == "Arabic" else "Download doctor report",
-                data=doctor_download.encode("utf-8"),
-                file_name="doctor-report.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-            if st.session_state.doctor_pdf_report:
                 st.download_button(
-                    "تنزيل تقرير الطبيب بصيغة PDF"
-                    if language_choice == "Arabic"
-                    else "Download doctor PDF report",
-                    data=st.session_state.doctor_pdf_report,
-                    file_name="doctor-consultation-report.pdf",
-                    mime="application/pdf",
-                    type="primary",
+                    "تنزيل تقرير المريض" if language_choice == "Arabic" else "Download patient report",
+                    data=patient_download.encode("utf-8"),
+                    file_name="patient-report.txt",
+                    mime="text/plain",
                     use_container_width=True,
                 )
-        with patient_tab:
-            st.caption(
-                "ملخص بلغة بسيطة. اتبع تعليمات الطبيب المباشرة إذا اختلفت عن هذا الملخص."
-                if language_choice == "Arabic"
-                else "A plain-language recap. Follow the clinician's direct advice if it differs from this summary."
-            )
-            render_report(reports["patient_report"], patient_sections, "patient")
-            patient_download = report_text(
-                patient_report_title, reports["patient_report"], patient_sections
-            )
-            st.download_button(
-                "تنزيل تقرير المريض" if language_choice == "Arabic" else "Download patient report",
-                data=patient_download.encode("utf-8"),
-                file_name="patient-report.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-            if st.session_state.patient_pdf_report:
-                st.download_button(
-                    "تنزيل تقرير المريض بصيغة PDF"
-                    if language_choice == "Arabic"
-                    else "Download patient PDF report",
-                    data=st.session_state.patient_pdf_report,
-                    file_name="patient-consultation-report.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True,
-                )
+                if st.session_state.patient_pdf_report:
+                    st.download_button(
+                        "تنزيل تقرير المريض بصيغة PDF"
+                        if language_choice == "Arabic"
+                        else "Download patient PDF report",
+                        data=st.session_state.patient_pdf_report,
+                        file_name="patient-consultation-report.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+with doctor_history_tab:
+    render_doctor_history(current_user)
